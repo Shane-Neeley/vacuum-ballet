@@ -54,7 +54,7 @@ vacuum-ballet/
 
 ## 4) Simple setup
 
-Create a `.env` file with your Roborock credentials:
+Create a `.env` file with your Roborock credentials and default dance centre:
 
 ```bash
 ROBO_EMAIL=your_email@example.com
@@ -81,17 +81,17 @@ Create `.env` file with your Roborock credentials and dance defaults.
 ## 6) Run it
 
 ```bash
-# Direct Python execution:
-python src/main.py devices
-python src/main.py beep
-python src/main.py goto 32500 27500
-python src/main.py dance figure8 100 600
-
-# OR using the installed command:
+# Using the installed command (selects the first S4 Max / `roborock.vacuum.a19`):
 vacuum-ballet devices
 vacuum-ballet beep
 vacuum-ballet goto 32500 27500
 vacuum-ballet dance figure8 100 600
+
+# Or run directly with Python:
+python src/main.py devices
+python src/main.py beep
+python src/main.py goto 32500 27500
+python src/main.py dance figure8 100 600
 ```
 
 ---

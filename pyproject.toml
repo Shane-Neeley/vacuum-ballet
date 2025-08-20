@@ -1,0 +1,18 @@
+[project]
+name = "vacuum-ballet"
+version = "0.1.0"
+description = "Choreograph a Roborock S4 Max from Python: goto + paths + beats"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-roborock",
+    "python-dotenv",
+    "pytest",
+]
+
+[project.scripts]
+vacuum-ballet = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

@@ -10,10 +10,8 @@ Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on
 ## Quick start
 
 ```bash
-# 1) Install dependencies (choose one):
-pip install -r requirements.txt
-# OR
-pip install -e .
+# 1) Sync dependencies (creates a .venv)
+uv sync
 
 # 2) Create .env file with your Roborock credentials and dance defaults
 # ROBO_EMAIL=your_email@example.com
@@ -24,16 +22,19 @@ pip install -e .
 # DEFAULT_BEAT_MS=600
 
 # 3) See devices on your account (S4 Max is model roborock.vacuum.a19)
-vacuum-ballet devices
+uv run vacuum-ballet devices
 
 # 4) Safe beep test
-vacuum-ballet beep
+uv run vacuum-ballet beep
 
 # 5) Tiny motion (adjust x/y to a near point on your map, units: millimetres)
-vacuum-ballet goto 32500 27500
+uv run vacuum-ballet goto 32500 27500
 
 # 6) Dance! (pattern radius_mm beat_ms)
-vacuum-ballet dance figure8 100 600
+uv run vacuum-ballet dance figure8 100 600
+
+# 7) Run tests
+uv run pytest
 ```
 
 ## What you'll learn

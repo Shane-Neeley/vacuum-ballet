@@ -13,13 +13,11 @@ Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on
 # 1) Sync dependencies (creates a .venv)
 uv sync
 
-# 2) Create .env file with your Roborock credentials and dance defaults
+# 2) Create .env file with your Roborock credentials
 # ROBO_EMAIL=your_email@example.com
 # ROBO_PASSWORD=your_password_here
-# DEFAULT_CENTER_X=32000
-# DEFAULT_CENTER_Y=27000
-# DEFAULT_RADIUS=800
-# DEFAULT_BEAT_MS=600
+# DEFAULT_RADIUS=800       # optional, dance size
+# DEFAULT_BEAT_MS=600      # optional, delay between points
 
 # 3) See devices on your account (S4 Max is model roborock.vacuum.a19)
 uv run vacuum-ballet devices
@@ -37,6 +35,7 @@ uv run vacuum-ballet dock
 uv run vacuum-ballet goto 32500 27500
 
 # 8) Dance! (pattern radius_mm beat_ms)
+#    The routine centres on the dock if map data is available.
 uv run vacuum-ballet dance figure8 100 600
 
 # 9) Run tests

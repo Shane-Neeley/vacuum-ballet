@@ -144,18 +144,50 @@ async def list_devices() -> None:
 
 async def beep() -> None:
     """Play the locate/beep sound."""
-
     client = await _client()
-    await client.send_command(RoborockCommand.FIND_ME)
-    await client.async_disconnect()
+    try:
+        await client.send_command(RoborockCommand.FIND_ME)
+    finally:
+        await client.async_disconnect()
+
+
+async def clean() -> None:
+    """Start a full cleaning cycle."""
+    client = await _client()
+    try:
+        await client.send_command(RoborockCommand.APP_START)
+    finally:
+        await client.async_disconnect()
+
+
+async def dock() -> None:
+    """Return to the charging dock."""
+    client = await _client()
+    try:
+        await client.send_command(RoborockCommand.APP_CHARGE)
+    finally:
+        await client.async_disconnect()
+
+
+async def status() -> None:
+    """Print battery level and state."""
+    client = await _client()
+    try:
+        st = await client.get_status()
+        state = st.state_name or "unknown"
+        battery = st.battery if st.battery is not None else "?"
+        print(f"State: {state}, Battery: {battery}%")
+    finally:
+        await client.async_disconnect()
 
 
 async def goto(x: int, y: int) -> None:
     """Move to an absolute map coordinate in millimetres."""
-
     client = await _client()
-    await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
-    await client.async_disconnect()
+    try:
+        await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
+    finally:
+        await client.async_disconnect()
 
 
 async def dance(pattern: str, size: int, beat_ms: int) -> None:
@@ -178,10 +210,12 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
         raise ValueError("Unknown pattern")
 
     client = await _client()
-    for px, py in points:
-        await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
-        await asyncio.sleep(beat_ms / 1000)
-    await client.async_disconnect()
+    try:
+        for px, py in points:
+            await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
+            await asyncio.sleep(beat_ms / 1000)
+    finally:
+        await client.async_disconnect()
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +229,9 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("devices", help="List devices on the account")
     sub.add_parser("beep", help="Play locate sound")
+    sub.add_parser("status", help="Show battery and state")
+    sub.add_parser("clean", help="Start full cleaning cycle")
+    sub.add_parser("dock", help="Return to charging dock")
 
     p_goto = sub.add_parser("goto", help="Move to map coordinates (mm)")
     p_goto.add_argument("x", type=int)
@@ -223,6 +260,12 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(list_devices())
     elif args.cmd == "beep":
         asyncio.run(beep())
+    elif args.cmd == "status":
+        asyncio.run(status())
+    elif args.cmd == "clean":
+        asyncio.run(clean())
+    elif args.cmd == "dock":
+        asyncio.run(dock())
     elif args.cmd == "goto":
         asyncio.run(goto(args.x, args.y))
     elif args.cmd == "dance":

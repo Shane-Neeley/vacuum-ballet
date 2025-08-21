@@ -36,6 +36,7 @@ from roborock.const import ROBOROCK_S4_MAX
 from roborock.web_api import RoborockApiClient
 from roborock.roborock_typing import RoborockCommand
 from roborock.version_1_apis.roborock_mqtt_client_v1 import RoborockMqttClientV1
+from roborock.containers import DeviceData
 
 Point = Tuple[int, int]
 
@@ -115,12 +116,13 @@ async def _login():
 
 
 async def _client() -> RoborockMqttClientV1:
-    api, user_data, home = await _login()
+    _, user_data, home = await _login()
 
     # choose the first S4 Max
-    for device_duid, (device, product) in home.device_products.items():
+    for device, product in home.device_products.values():
         if product.model == ROBOROCK_S4_MAX:
-            client = RoborockMqttClientV1(user_data, device)
+            device_info = DeviceData(device=device, model=product.model)
+            client = RoborockMqttClientV1(user_data, device_info)
             await client.async_connect()
             return client
     raise RuntimeError("No Roborock S4 Max found on this account")

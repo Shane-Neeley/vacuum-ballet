@@ -75,12 +75,18 @@ Create `.env` file with your Roborock credentials and dance defaults.
 # Using the installed command (selects the first S4 Max / `roborock.vacuum.a19`):
 uv run vacuum-ballet devices
 uv run vacuum-ballet beep
+uv run vacuum-ballet status
+uv run vacuum-ballet clean
+uv run vacuum-ballet dock
 uv run vacuum-ballet goto 32500 27500
 uv run vacuum-ballet dance figure8 100 600
 
 # Or run directly with Python:
 uv run python src/main.py devices
 uv run python src/main.py beep
+uv run python src/main.py status
+uv run python src/main.py clean
+uv run python src/main.py dock
 uv run python src/main.py goto 32500 27500
 uv run python src/main.py dance figure8 100 600
 ```
@@ -111,7 +117,9 @@ uv run pytest
 2. Create `src/main.py` with all functionality.
 3. Verify `uv run vacuum-ballet devices` lists a device.
 4. Verify `uv run vacuum-ballet beep`.
-5. Verify `uv run vacuum-ballet goto` small move.
-6. Verify `uv run vacuum-ballet dance` with small radius.
-7. Run `uv run pytest`.
-8. Keep docs in sync.
+5. Verify `uv run vacuum-ballet status`.
+6. Verify `uv run vacuum-ballet clean` then `uv run vacuum-ballet dock`.
+7. Verify `uv run vacuum-ballet goto` small move.
+8. Verify `uv run vacuum-ballet dance` with small radius.
+9. Run `uv run pytest`.
+10. Keep docs in sync.

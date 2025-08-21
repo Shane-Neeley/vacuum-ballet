@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vacuum-ballet = "src.main:main"
+vacuum-ballet = "main:main"
 
 [build-system]
 requires = ["setuptools>=61"]

@@ -118,8 +118,8 @@ async def _client() -> RoborockMqttClientV1:
     api, user_data, home = await _login()
 
     # choose the first S4 Max
-    for device in home.devices:
-        if device.device.model == ROBOROCK_S4_MAX:
+    for device_duid, (device, product) in home.device_products.items():
+        if product.model == ROBOROCK_S4_MAX:
             client = RoborockMqttClientV1(user_data, device)
             await client.async_connect()
             return client
@@ -135,10 +135,9 @@ async def list_devices() -> None:
 
     _, _, home = await _login()
     for dev in home.devices:
-        name = dev.device.name
-        model = dev.device.model
-        marker = " <S4 Max>" if model == ROBOROCK_S4_MAX else ""
-        print(f"{name} ({model}){marker}")
+        name = dev.name
+        product_id = dev.product_id
+        print(f"{name} ({product_id})")
 
 
 async def beep() -> None:

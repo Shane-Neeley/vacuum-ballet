@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 # Allow importing from the src directory
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from main import clean, dock, status as status_cmd  # type: ignore
+from main import clean, dock, status as status_cmd, _map_center  # type: ignore
 from roborock.roborock_typing import RoborockCommand
 from roborock.containers import Status
 
@@ -49,6 +49,22 @@ class TestCommands(unittest.TestCase):
                 asyncio.run(status_cmd())
             mock_print.assert_called_with("State: unknown, Battery: 50%")
             self.client.async_disconnect.assert_awaited()
+
+
+class TestMapCenter(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = AsyncMock()
+        self.client.get_map_v1 = AsyncMock(return_value=b'raw')
+
+    def test_prefers_charger_position(self) -> None:
+        from vacuum_map_parser_base.map_data import MapData, Point
+        md = MapData()
+        md.charger = Point(123, 456)
+        with patch('vacuum_map_parser_roborock.map_data_parser.RoborockMapDataParser') as parser_cls:
+            parser_instance = parser_cls.return_value
+            parser_instance.parse.return_value = md
+            center = asyncio.run(_map_center(self.client))
+        self.assertEqual(center, (123, 456))
 
 
 if __name__ == '__main__':  # pragma: no cover - manual execution

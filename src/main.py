@@ -190,27 +190,51 @@ async def goto(x: int, y: int) -> None:
         await client.async_disconnect()
 
 
+async def _map_center(client: RoborockMqttClientV1) -> Point | None:
+    """Return charger or vacuum position from the current map if available."""
+
+    try:
+        from vacuum_map_parser_base.config.color import ColorsPalette
+        from vacuum_map_parser_base.config.image_config import ImageConfig
+        from vacuum_map_parser_base.config.size import Sizes
+        from vacuum_map_parser_roborock.map_data_parser import RoborockMapDataParser
+
+        raw = await client.get_map_v1()
+        if not raw:
+            return None
+        parser = RoborockMapDataParser(ColorsPalette(), Sizes(), [], ImageConfig(), [])
+        data = parser.parse(raw)
+        if data.charger is not None:
+            return int(data.charger.x), int(data.charger.y)
+        if data.vacuum_position is not None:
+            return int(data.vacuum_position.x), int(data.vacuum_position.y)
+    except Exception:
+        return None
+    return None
+
+
 async def dance(pattern: str, size: int, beat_ms: int) -> None:
     """Dance using one of the built‑in patterns."""
-
-    center = (
-        int(os.getenv("DEFAULT_CENTER_X", "32000")),
-        int(os.getenv("DEFAULT_CENTER_Y", "27000")),
-    )
-
-    if pattern == "circle":
-        points: Iterable[Point] = circle(center, size)
-    elif pattern == "square":
-        points = square(center, size)
-    elif pattern == "figure8":
-        points = figure_eight(center, size)
-    elif pattern == "lissajous":
-        points = lissajous(center, ax=size, ay=size)
-    else:
-        raise ValueError("Unknown pattern")
-
     client = await _client()
     try:
+        center = await _map_center(client)
+        if center is None:
+            center = (
+                int(os.getenv("DEFAULT_CENTER_X", "32000")),
+                int(os.getenv("DEFAULT_CENTER_Y", "27000")),
+            )
+
+        if pattern == "circle":
+            points: Iterable[Point] = circle(center, size)
+        elif pattern == "square":
+            points = square(center, size)
+        elif pattern == "figure8":
+            points = figure_eight(center, size)
+        elif pattern == "lissajous":
+            points = lissajous(center, ax=size, ay=size)
+        else:
+            raise ValueError("Unknown pattern")
+
         for px, py in points:
             await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
             await asyncio.sleep(beat_ms / 1000)

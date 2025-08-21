@@ -28,10 +28,8 @@ A small Python package **`roborock_dance`** that logs into your Roborock account
 mkdir vacuum-ballet
 cd vacuum-ballet
 
-# install dependencies (choose one):
-pip install -r requirements.txt
-# OR install as editable package
-pip install -e .
+# install dependencies and create a .venv
+uv sync
 ```
 
 ---
@@ -54,7 +52,7 @@ vacuum-ballet/
 
 ## 4) Simple setup
 
-Create a `.env` file with your Roborock credentials:
+Create a `.env` file with your Roborock credentials and default dance centre:
 
 ```bash
 ROBO_EMAIL=your_email@example.com
@@ -63,13 +61,6 @@ DEFAULT_CENTER_X=32000
 DEFAULT_CENTER_Y=27000
 DEFAULT_RADIUS=800
 ```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
 ---
 
 ## 5) Secrets & config
@@ -81,17 +72,17 @@ Create `.env` file with your Roborock credentials and dance defaults.
 ## 6) Run it
 
 ```bash
-# Direct Python execution:
-python src/main.py devices
-python src/main.py beep
-python src/main.py goto 32500 27500
-python src/main.py dance figure8 100 600
+# Using the installed command (selects the first S4 Max / `roborock.vacuum.a19`):
+uv run vacuum-ballet devices
+uv run vacuum-ballet beep
+uv run vacuum-ballet goto 32500 27500
+uv run vacuum-ballet dance figure8 100 600
 
-# OR using the installed command:
-vacuum-ballet devices
-vacuum-ballet beep
-vacuum-ballet goto 32500 27500
-vacuum-ballet dance figure8 100 600
+# Or run directly with Python:
+uv run python src/main.py devices
+uv run python src/main.py beep
+uv run python src/main.py goto 32500 27500
+uv run python src/main.py dance figure8 100 600
 ```
 
 ---
@@ -99,7 +90,7 @@ vacuum-ballet dance figure8 100 600
 ## 7) Tests (offline-safe)
 
 ```bash
-python tests/test_main.py
+uv run pytest
 ```
 
 ---
@@ -118,9 +109,9 @@ python tests/test_main.py
 
 1. Bootstrap repo and dependencies.
 2. Create `src/main.py` with all functionality.
-3. Verify `python src/main.py devices` lists a device.
-4. Verify `python src/main.py beep`.
-5. Verify `python src/main.py goto` small move.
-6. Verify `python src/main.py dance` with small radius.
-7. Run unit tests.
+3. Verify `uv run vacuum-ballet devices` lists a device.
+4. Verify `uv run vacuum-ballet beep`.
+5. Verify `uv run vacuum-ballet goto` small move.
+6. Verify `uv run vacuum-ballet dance` with small radius.
+7. Run `uv run pytest`.
 8. Keep docs in sync.

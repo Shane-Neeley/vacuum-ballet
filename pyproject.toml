@@ -3,7 +3,7 @@ name = "vacuum-ballet"
 version = "0.1.0"
 description = "Choreograph a Roborock S4 Max from Python: goto + paths + beats"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "python-roborock",
     "python-dotenv",

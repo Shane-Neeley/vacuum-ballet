@@ -3,7 +3,7 @@
 
 Tiny CLI and pattern generators to choreograph a Roborock **S4 Max** using
 simple ``goto`` waypoints.  The script logs in with the credentials from a
-``.env`` file and exposes a few sub‑commands:
+``.env`` file and exposes a few sub-commands:
 
 ``devices``
     List devices on the account and highlight the S4 Max.
@@ -16,10 +16,10 @@ simple ``goto`` waypoints.  The script logs in with the credentials from a
 
 ``dance PATTERN SIZE [BEAT_MS]``
     Send a sequence of ``goto`` commands following ``PATTERN`` at the tempo
-    defined by ``BEAT_MS`` (defaults to 600 ms between points).
+    defined by ``BEAT_MS`` (defaults to 600 ms between points).
 
-Only a single device – the first S4 Max on the account – is controlled.
-The geometry helpers are pure functions and are unit‑tested so they can be
+Only a single device - the first S4 Max on the account - is controlled.
+The geometry helpers are pure functions and are unit-tested so they can be
 studied independently from the robot hardware.
 """
 
@@ -27,8 +27,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import math
 import os
+from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
 
 from dotenv import load_dotenv
@@ -45,6 +47,7 @@ Point = Tuple[int, int]
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
+
 def circle(center: Point, radius_mm: int, steps: int = 20) -> Iterator[Point]:
     """Generate points on a circle."""
 
@@ -59,16 +62,18 @@ def square(center: Point, half_mm: int = 600) -> List[Point]:
 
     cx, cy = center
     return [
-        (cx - half_mm, cy - half_mm),
-        (cx + half_mm, cy - half_mm),
-        (cx + half_mm, cy + half_mm),
-        (cx - half_mm, cy + half_mm),
-        (cx - half_mm, cy - half_mm),
+        (int(cx - half_mm), int(cy - half_mm)),
+        (int(cx + half_mm), int(cy - half_mm)),
+        (int(cx + half_mm), int(cy + half_mm)),
+        (int(cx - half_mm), int(cy + half_mm)),
+        (int(cx - half_mm), int(cy - half_mm)),
     ]
 
 
-def figure_eight(center: Point, radius_mm: int = 800, steps: int = 24) -> Iterator[Point]:
-    """Generate a figure‑eight (infinity symbol)."""
+def figure_eight(
+    center: Point, radius_mm: int = 800, steps: int = 24
+) -> Iterator[Point]:
+    """Generate a figure-eight (infinity symbol)."""
 
     cx, cy = center
     for i in range(steps):
@@ -97,9 +102,72 @@ def lissajous(
         yield int(x), int(y)
 
 
+def spin_crazy(center: Point, radius_mm: int = 400, steps: int = 20) -> Iterator[Point]:
+    """Generate erratic spinning and jerky movements near center position.
+
+    Creates a chaotic pattern with rapid direction changes, small spirals,
+    and sudden jerks to simulate 'crazy' movement.
+    """
+    import random
+
+    cx, cy = center
+    # Set a consistent seed for reproducible 'craziness'
+    random.seed(42)
+
+    for i in range(steps):
+        # Base circular motion with random radius variations
+        base_angle = 2 * math.pi * i / steps * 3  # 3x speed for more spinning
+
+        # Add random jerkiness - sudden direction changes
+        jerk_factor = random.uniform(0.3, 1.8)
+        angle_jitter = random.uniform(-math.pi / 2, math.pi / 2)
+        actual_angle = base_angle + angle_jitter
+
+        # Varying radius for erratic movement
+        current_radius = radius_mm * jerk_factor * random.uniform(0.2, 1.0)
+
+        # Add random offset for jerky movements
+        jerk_x = random.uniform(-radius_mm * 0.3, radius_mm * 0.3)
+        jerk_y = random.uniform(-radius_mm * 0.3, radius_mm * 0.3)
+
+        x = cx + current_radius * math.cos(actual_angle) + jerk_x
+        y = cy + current_radius * math.sin(actual_angle) + jerk_y
+
+        # Occasionally add dramatic jerks to random positions
+        if random.random() < 0.2:  # 20% chance of dramatic jerk
+            jerk_distance = radius_mm * random.uniform(0.5, 1.2)
+            jerk_angle = random.uniform(0, 2 * math.pi)
+            x = cx + jerk_distance * math.cos(jerk_angle)
+            y = cy + jerk_distance * math.sin(jerk_angle)
+
+        yield int(x), int(y)
+
+
 # ---------------------------------------------------------------------------
 # Roborock helpers
 # ---------------------------------------------------------------------------
+
+
+def _setup_logging() -> None:
+    """Initialize a simple file logger at logs/logs.txt."""
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # If we can't create a directory, silently skip logging setup
+        return
+
+    log_file = log_dir / "logs.txt"
+    logger = logging.getLogger("vacuum_ballet")
+    if logger.handlers:
+        return
+
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(str(log_file), encoding="utf-8")
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
 
 async def _login():
     """Log in to Roborock cloud and return user and home data."""
@@ -112,6 +180,9 @@ async def _login():
     api = RoborockApiClient(email)
     user_data = await api.pass_login(password)
     home_data = await api.get_home_data(user_data)
+    logging.getLogger("vacuum_ballet").info(
+        "Logged in and fetched home data with %d devices", len(home_data.devices)
+    )
     return api, user_data, home_data
 
 
@@ -124,6 +195,9 @@ async def _client() -> RoborockMqttClientV1:
             device_info = DeviceData(device=device, model=product.model)
             client = RoborockMqttClientV1(user_data, device_info)
             await client.async_connect()
+            logging.getLogger("vacuum_ballet").info(
+                "Connected to device '%s' (%s)", device.name, product.model
+            )
             return client
     raise RuntimeError("No Roborock S4 Max found on this account")
 
@@ -131,6 +205,7 @@ async def _client() -> RoborockMqttClientV1:
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 async def list_devices() -> None:
     """Print devices tied to the account."""
@@ -146,6 +221,7 @@ async def beep() -> None:
     """Play the locate/beep sound."""
     client = await _client()
     try:
+        logging.getLogger("vacuum_ballet").info("beep requested")
         await client.send_command(RoborockCommand.FIND_ME)
     finally:
         await client.async_disconnect()
@@ -155,6 +231,7 @@ async def clean() -> None:
     """Start a full cleaning cycle."""
     client = await _client()
     try:
+        logging.getLogger("vacuum_ballet").info("clean start requested")
         await client.send_command(RoborockCommand.APP_START)
     finally:
         await client.async_disconnect()
@@ -164,6 +241,7 @@ async def dock() -> None:
     """Return to the charging dock."""
     client = await _client()
     try:
+        logging.getLogger("vacuum_ballet").info("dock requested")
         await client.send_command(RoborockCommand.APP_CHARGE)
     finally:
         await client.async_disconnect()
@@ -177,6 +255,58 @@ async def status() -> None:
         state = st.state_name or "unknown"
         battery = st.battery if st.battery is not None else "?"
         print(f"State: {state}, Battery: {battery}%")
+        logging.getLogger("vacuum_ballet").info(
+            "Status queried: state=%s battery=%s", state, battery
+        )
+    finally:
+        await client.async_disconnect()
+
+
+async def where() -> None:
+    """Show current robot position and map center info for debugging."""
+    client = await _client()
+    try:
+        print("🤖 Robot Location Debug Info:")
+
+        # Try to get current vacuum position
+        vacuum_pos = await _vacuum_position(client)
+        if vacuum_pos:
+            print(f"   Current position: ({vacuum_pos[0]}, {vacuum_pos[1]}) mm")
+        else:
+            print("   Current position: Unable to detect")
+
+        # Try to get map center (charger or vacuum position)
+        map_center = await _map_center(client)
+        if map_center:
+            print(f"   Map center: ({map_center[0]}, {map_center[1]}) mm")
+        else:
+            print("   Map center: Unable to detect")
+            default_x = int(os.getenv("DEFAULT_CENTER_X", "32000"))
+            default_y = int(os.getenv("DEFAULT_CENTER_Y", "27000"))
+            print(f"   Fallback center: ({default_x}, {default_y}) mm")
+
+        # Show robot status
+        st = await client.get_status()
+        if st:
+            state = st.state_name or "unknown"
+            print(f"   Robot state: {state}")
+            if hasattr(st, "in_cleaning") and st.in_cleaning is not None:
+                print(f"   In cleaning mode: {st.in_cleaning}")
+        logging.getLogger("vacuum_ballet").info(
+            "where: pos=%s center=%s state=%s cleaning=%s",
+            vacuum_pos,
+            map_center,
+            st.state_name if st else None,
+            getattr(st, "in_cleaning", None) if st else None,
+        )
+
+        print("\n💡 Tips:")
+        print(
+            "   - If positions are 0 or very large numbers, the robot might not be localized"
+        )
+        print("   - Try running 'beep' first to wake the robot")
+        print("   - Make sure the robot has completed initial mapping")
+
     finally:
         await client.async_disconnect()
 
@@ -185,14 +315,14 @@ async def goto(x: int, y: int) -> None:
     """Move to an absolute map coordinate in millimetres."""
     client = await _client()
     try:
+        logging.getLogger("vacuum_ballet").info("goto requested: (%d, %d)", x, y)
         await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
     finally:
         await client.async_disconnect()
 
 
-async def _map_center(client: RoborockMqttClientV1) -> Point | None:
-    """Return charger or vacuum position from the current map if available."""
-
+async def _parse_map_data(client: RoborockMqttClientV1):
+    """Parse map data from client. Returns parsed data or None on error."""
     try:
         from vacuum_map_parser_base.config.color import ColorsPalette
         from vacuum_map_parser_base.config.image_config import ImageConfig
@@ -203,26 +333,123 @@ async def _map_center(client: RoborockMqttClientV1) -> Point | None:
         if not raw:
             return None
         parser = RoborockMapDataParser(ColorsPalette(), Sizes(), [], ImageConfig(), [])
-        data = parser.parse(raw)
-        if data.charger is not None:
-            return int(data.charger.x), int(data.charger.y)
-        if data.vacuum_position is not None:
-            return int(data.vacuum_position.x), int(data.vacuum_position.y)
+        return parser.parse(raw)
     except Exception:
         return None
+
+
+async def _map_center(client: RoborockMqttClientV1) -> Point | None:
+    """Return charger or vacuum position from the current map if available."""
+    data = await _parse_map_data(client)
+    if data is None:
+        return None
+
+    if data.charger is not None:
+        return int(data.charger.x), int(data.charger.y)
+    if data.vacuum_position is not None:
+        return int(data.vacuum_position.x), int(data.vacuum_position.y)
     return None
 
 
+async def _charger_position(client: RoborockMqttClientV1) -> Point | None:
+    """Return charger (dock) position if available."""
+    data = await _parse_map_data(client)
+    if data is None or data.charger is None:
+        return None
+    return int(data.charger.x), int(data.charger.y)
+
+
+async def _vacuum_position(client: RoborockMqttClientV1) -> Point | None:
+    """Return the vacuum position from the current map if available.
+
+    This intentionally ignores the charger position so it can be used for
+    arrival-gating while the robot is moving.
+    """
+    data = await _parse_map_data(client)
+    if data is None:
+        return None
+
+    if data.vacuum_position is not None:
+        return int(data.vacuum_position.x), int(data.vacuum_position.y)
+    return None
+
+
+def _clamp_radius(size: int) -> int:
+    """Clamp dance size to a safe range, configurable via env vars."""
+
+    # Defaults align with test expectations when env vars are missing
+    min_mm = int(os.getenv("MIN_DANCE_RADIUS_MM", "200"))
+    max_mm = int(os.getenv("MAX_DANCE_RADIUS_MM", "1200"))
+    return max(min_mm, min(size, max_mm))
+
+
+async def _wait_until_near(
+    client: RoborockMqttClientV1,
+    target: Point,
+    threshold_mm: int,
+    timeout_s: float,
+    poll_s: float = 0.4,
+) -> bool:
+    """Wait until the robot is within ``threshold_mm`` of ``target``.
+
+    Returns True on near-arrival, False on timeout or if position is unavailable.
+    """
+
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        pos = await _vacuum_position(client)
+        if pos is None:
+            await asyncio.sleep(poll_s)
+            continue
+        distance_mm = ((pos[0] - target[0]) ** 2 + (pos[1] - target[1]) ** 2) ** 0.5
+        if distance_mm <= threshold_mm:
+            return True
+        await asyncio.sleep(poll_s)
+    return False
+
+
 async def dance(pattern: str, size: int, beat_ms: int) -> None:
-    """Dance using one of the built‑in patterns."""
+    """Dance using one of the built-in patterns."""
     client = await _client()
     try:
-        center = await _map_center(client)
-        if center is None:
-            center = (
-                int(os.getenv("DEFAULT_CENTER_X", "32000")),
-                int(os.getenv("DEFAULT_CENTER_Y", "27000")),
-            )
+        print(f"🕺 Starting {pattern} dance (size: {size}mm, beat: {beat_ms}ms)")
+        log = logging.getLogger("vacuum_ballet")
+
+        # Prefer dancing around the dock (charger) when available
+        center = await _charger_position(client)
+        if center:
+            print(f"   Centering near dock at: ({center[0]}, {center[1]}) mm")
+        else:
+            # Next best: current robot position
+            current_pos = await _vacuum_position(client)
+            if current_pos:
+                center = current_pos
+                print(f"   Centering at robot position: ({center[0]}, {center[1]}) mm")
+            else:
+                # Fallback to map center (if any), else small safe defaults
+                center = await _map_center(client)
+                if center:
+                    print(f"   Using map-derived center: ({center[0]}, {center[1]}) mm")
+                else:
+                    center = (
+                        int(os.getenv("DEFAULT_CENTER_X", "0")),
+                        int(os.getenv("DEFAULT_CENTER_Y", "0")),
+                    )
+                    print(f"   ⚠️  Using fallback center: ({center[0]}, {center[1]}) mm")
+                    print(
+                        "   💡 Consider setting DEFAULT_CENTER_X/Y environment variables"
+                    )
+        log.info(
+            "dance start: pattern=%s size=%s beat_ms=%s center=%s",
+            pattern,
+            size,
+            beat_ms,
+            center,
+        )
+
+        size = _clamp_radius(size)
+        if size != int(os.getenv("DEFAULT_RADIUS", "800")):
+            print(f"   📐 Clamped dance size to: {size}mm")
 
         if pattern == "circle":
             points: Iterable[Point] = circle(center, size)
@@ -232,12 +459,41 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
             points = figure_eight(center, size)
         elif pattern == "lissajous":
             points = lissajous(center, ax=size, ay=size)
+        elif pattern == "spin_crazy":
+            points = spin_crazy(center, size)
         else:
             raise ValueError("Unknown pattern")
 
-        for px, py in points:
-            await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
-            await asyncio.sleep(beat_ms / 1000)
+        # Beat timing (simple fixed delay per waypoint)
+        min_beat_s = beat_ms / 1000
+
+        # Generate all waypoints first to show preview
+        waypoints = list(points)
+        print(f"   🎯 Dance will visit {len(waypoints)} waypoints")
+        log.info("generated %d waypoints", len(waypoints))
+
+        for i, (px, py) in enumerate(waypoints, 1):
+            # Keep stdout concise; detailed targets go to the log file
+            if i == 1 or i == len(waypoints) or i % 5 == 0:
+                print(f"   Step {i}/{len(waypoints)}")
+            log.info("waypoint %d/%d -> (%d, %d)", i, len(waypoints), px, py)
+
+            try:
+                await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
+                # Keep beat timing quiet on stdout
+                log.debug("beat sleep %.3fs", min_beat_s)
+
+                # Simple beat-based timing (no arrival detection)
+                if min_beat_s > 0:
+                    await asyncio.sleep(min_beat_s)
+
+            except Exception as e:
+                log.exception("error sending waypoint %d: %s", i, e)
+                # Re-raise to surface error to caller/tests while still disconnecting in finally
+                raise
+
+        print("   🎉 Dance complete!")
+        log.info("dance complete")
     finally:
         await client.async_disconnect()
 
@@ -246,14 +502,17 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> None:
     load_dotenv()
+    _setup_logging()
     parser = argparse.ArgumentParser(description="Roborock Vacuum Ballet CLI")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("devices", help="List devices on the account")
     sub.add_parser("beep", help="Play locate sound")
     sub.add_parser("status", help="Show battery and state")
+    sub.add_parser("where", help="Show robot position and coordinates for debugging")
     sub.add_parser("clean", help="Start full cleaning cycle")
     sub.add_parser("dock", help="Return to charging dock")
 
@@ -262,19 +521,21 @@ def main(argv: list[str] | None = None) -> None:
     p_goto.add_argument("y", type=int)
 
     p_dance = sub.add_parser("dance", help="Dance a pattern")
-    p_dance.add_argument("pattern", choices=["circle", "square", "figure8", "lissajous"])
+    p_dance.add_argument(
+        "pattern", choices=["circle", "square", "figure8", "lissajous", "spin_crazy"]
+    )
     p_dance.add_argument(
         "size",
         type=int,
         nargs="?",
-        default=int(os.getenv("DEFAULT_RADIUS", "800")),
+        default=int(os.getenv("DEFAULT_RADIUS", "400")),
         help="Radius or half-size in mm",
     )
     p_dance.add_argument(
         "beat_ms",
         type=int,
         nargs="?",
-        default=int(os.getenv("DEFAULT_BEAT_MS", "600")),
+        default=int(os.getenv("DEFAULT_BEAT_MS", "1000")),
         help="Delay between points in milliseconds",
     )
 
@@ -286,6 +547,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(beep())
     elif args.cmd == "status":
         asyncio.run(status())
+    elif args.cmd == "where":
+        asyncio.run(where())
     elif args.cmd == "clean":
         asyncio.run(clean())
     elif args.cmd == "dock":
@@ -300,4 +563,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
     main()
-

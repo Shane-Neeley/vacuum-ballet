@@ -1,6 +1,7 @@
 # RoboRock Vacuum Ballet Project 🕺🤖
 
-Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on the *easy, no-disassembly* path:
+Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on the _easy, no-disassembly_ path:
+
 - Uses the `python-roborock` SDK with your Roborock app credentials.
 - Sends simple **go‑to** waypoints to choreograph circles, squares, figure‑eights, and Lissajous patterns.
 - Includes a tiny CLI: `vacuum-ballet` for beeps, status, cleaning and docking.
@@ -43,6 +44,7 @@ uv run pytest
 ```
 
 ## What you'll learn
+
 - Differential-drive motion by **waypoints**
 - Basic timing & beats (BPM)
 - Simple Python robotics programming

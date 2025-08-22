@@ -14,24 +14,8 @@ Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on
 # 1) Sync dependencies (creates a .venv)
 uv sync
 
-# 2) Create .env file with your Roborock credentials
-# ROBO_EMAIL=your_email@example.com
-# ROBO_PASSWORD=your_password_here
-#
-# Optional: create `.env.ballet` or `.envs/controls.env` for control variables
-# See `docs/CONTROLS.env.example` for a complete list, e.g.:
-# MIN_DANCE_RADIUS_MM=200
-# MAX_DANCE_RADIUS_MM=1200
-# ARRIVAL_THRESHOLD_MM=250
-# WAYPOINT_TIMEOUT_S=35
-# ARRIVAL_POLL_S=0.5
-# ARRIVAL_SETTLE_S=0.2
-# DOCK_BUFFER_MM=300
-# ENABLE_GOTO_PREFLIGHT=1
-# PREFLIGHT_START_DELAY_S=0.4
-# PREFLIGHT_PAUSE_DELAY_S=0.3
-# DEFAULT_RADIUS=400
-# DEFAULT_BEAT_MS=1000
+# 2) Copy .env.example to .env and set values (credentials + controls)
+# See .env.example for all variables
 
 # 3) See devices on your account (S4 Max is model roborock.vacuum.a19)
 uv run vacuum-ballet devices
@@ -52,11 +36,19 @@ uv run vacuum-ballet goto 32500 27500
 #    The routine centres on the dock if map data is available.
 uv run vacuum-ballet dance figure8 100 600
 
+More dances:
+
+uv run vacuum-ballet dance circle 400 1000
+uv run vacuum-ballet dance square 200 600
+uv run vacuum-ballet dance figure8 100 600
+uv run vacuum-ballet dance spin_crazy 100 600
+
+
 # 10) Map snapshots
 # One shot:
-# uv run vacuum-ballet mapsnap
+uv run vacuum-ballet mapsnap
 # Watch (interval seconds, count):
-# uv run vacuum-ballet mapwatch 2 30
+uv run vacuum-ballet mapwatch 2 30
 uv run vacuum-ballet dance square 100 600
 
 # 9) Run tests

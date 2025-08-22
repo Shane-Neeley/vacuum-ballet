@@ -17,8 +17,21 @@ uv sync
 # 2) Create .env file with your Roborock credentials
 # ROBO_EMAIL=your_email@example.com
 # ROBO_PASSWORD=your_password_here
-# DEFAULT_RADIUS=800       # optional, dance size
-# DEFAULT_BEAT_MS=600      # optional, delay between points
+#
+# Optional: create `.env.ballet` or `.envs/controls.env` for control variables
+# See `docs/CONTROLS.env.example` for a complete list, e.g.:
+# MIN_DANCE_RADIUS_MM=200
+# MAX_DANCE_RADIUS_MM=1200
+# ARRIVAL_THRESHOLD_MM=250
+# WAYPOINT_TIMEOUT_S=35
+# ARRIVAL_POLL_S=0.5
+# ARRIVAL_SETTLE_S=0.2
+# DOCK_BUFFER_MM=300
+# ENABLE_GOTO_PREFLIGHT=1
+# PREFLIGHT_START_DELAY_S=0.4
+# PREFLIGHT_PAUSE_DELAY_S=0.3
+# DEFAULT_RADIUS=400
+# DEFAULT_BEAT_MS=1000
 
 # 3) See devices on your account (S4 Max is model roborock.vacuum.a19)
 uv run vacuum-ballet devices
@@ -38,6 +51,13 @@ uv run vacuum-ballet goto 32500 27500
 # 8) Dance! (pattern radius_mm beat_ms)
 #    The routine centres on the dock if map data is available.
 uv run vacuum-ballet dance figure8 100 600
+
+# 10) Map snapshots
+# One shot:
+# uv run vacuum-ballet mapsnap
+# Watch (interval seconds, count):
+# uv run vacuum-ballet mapwatch 2 30
+uv run vacuum-ballet dance square 100 600
 
 # 9) Run tests
 uv run pytest

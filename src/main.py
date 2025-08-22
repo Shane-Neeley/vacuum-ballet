@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from roborock.const import ROBOROCK_S4_MAX
 from roborock.web_api import RoborockApiClient
 from roborock.roborock_typing import RoborockCommand
@@ -169,6 +169,33 @@ def _setup_logging() -> None:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
+
+def _load_envs() -> None:
+    """Load base .env and optional project-specific env files.
+
+    Load order (lowest to highest precedence, without overriding OS env):
+    - .env
+    - .env.ballet
+    - .envs/controls.env
+    """
+    # Base credentials and simple defaults
+    load_dotenv()
+
+    # Optional project-specific env next
+    base_dir = Path(__file__).resolve().parent.parent
+    ballet_env = base_dir / ".env.ballet"
+    if ballet_env.exists():
+        load_dotenv(ballet_env, override=False)
+
+    # Optional controls file inside .envs
+    controls_env = base_dir / ".envs" / "controls.env"
+    if controls_env.exists():
+        # Respect OS env values already set
+        # Only set keys that aren't present yet
+        vals = dotenv_values(controls_env)
+        for k, v in vals.items():
+            if k not in os.environ and v is not None:
+                os.environ[k] = v
 
 async def _login():
     """Log in to Roborock cloud and return user and home data."""
@@ -677,7 +704,7 @@ async def mapwatch(interval_s: float, count: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    load_dotenv()
+    _load_envs()
     _setup_logging()
     parser = argparse.ArgumentParser(description="Roborock Vacuum Ballet CLI")
     sub = parser.add_subparsers(dest="cmd")

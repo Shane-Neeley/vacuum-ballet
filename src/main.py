@@ -30,6 +30,7 @@ import asyncio
 import logging
 import math
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
 
@@ -359,6 +360,63 @@ async def _charger_position(client: RoborockMqttClientV1) -> Point | None:
     return int(data.charger.x), int(data.charger.y)
 
 
+def _generate_map_image(data) -> "object | None":
+    """Render a map image (PIL Image) from parsed map data, if possible.
+
+    Returns a PIL Image or None if rendering isn't possible.
+    """
+    try:
+        from vacuum_map_parser_base import image_generator
+        from vacuum_map_parser_base.config.color import ColorsPalette
+        from vacuum_map_parser_base.config.image_config import ImageConfig
+        from vacuum_map_parser_base.config.size import Sizes
+        from vacuum_map_parser_base.config.drawable import Drawable
+    except Exception:
+        return None
+
+    gen = image_generator.ImageGenerator(
+        ColorsPalette(),
+        Sizes(),
+        [
+            Drawable.CLEANED_AREA.value,
+            Drawable.ZONES.value,
+            Drawable.NO_GO_AREAS.value,
+            Drawable.VIRTUAL_WALLS.value,
+            Drawable.PATH.value,
+            Drawable.GOTO_PATH.value,
+            Drawable.CHARGER.value,
+            Drawable.VACUUM_POSITION.value,
+        ],
+        ImageConfig(),
+        [],
+    )
+
+    if data is None:
+        return gen.create_empty_map_image("NO MAP")
+
+    if getattr(data, "image", None) is None:
+        return gen.create_empty_map_image("NO MAP")
+
+    # Mutates data.image.data in place
+    gen.draw_map(data)
+    return data.image.data
+
+
+def _save_snapshot_image(image_obj: "object", suffix: str = "") -> Path | None:
+    """Save a PIL Image to logs/maps with timestamp. Returns path or None."""
+    try:
+        logs_dir = Path(__file__).resolve().parent.parent / "logs" / "maps"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        name = f"map_{ts}{suffix}.png"
+        out_path = logs_dir / name
+        image_obj.save(str(out_path), format="PNG")
+        logging.getLogger("vacuum_ballet").info("saved map snapshot: %s", out_path)
+        return out_path
+    except Exception:
+        return None
+
+
 def _offset_center_from_dock(dock: Point, radius_mm: int) -> Point:
     """Return a center offset away from the dock by a safe buffer + radius.
 
@@ -580,6 +638,39 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
         await client.async_disconnect()
 
 
+async def mapsnap() -> None:
+    """Fetch current map and save one PNG snapshot in logs/maps."""
+    client = await _client()
+    try:
+        data = await _parse_map_data(client)
+        image_obj = _generate_map_image(data)
+        if image_obj is None:
+            print("Could not render map image (missing parser/image libs)")
+            return
+        out = _save_snapshot_image(image_obj)
+        if out:
+            print(f"Saved map snapshot to: {out}")
+        else:
+            print("Failed to save map snapshot")
+    finally:
+        await client.async_disconnect()
+
+
+async def mapwatch(interval_s: float, count: int) -> None:
+    """Periodically save map snapshots to logs/maps."""
+    client = await _client()
+    try:
+        for i in range(count):
+            data = await _parse_map_data(client)
+            image_obj = _generate_map_image(data)
+            if image_obj is not None:
+                _save_snapshot_image(image_obj, suffix=f"_{i:03d}")
+            await asyncio.sleep(interval_s)
+        print(f"Saved {count} snapshot(s) to logs/maps")
+    finally:
+        await client.async_disconnect()
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -597,12 +688,16 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("where", help="Show robot position and coordinates for debugging")
     sub.add_parser("clean", help="Start full cleaning cycle")
     sub.add_parser("dock", help="Return to charging dock")
+    sub.add_parser("mapsnap", help="Save one lidar map snapshot to logs/maps")
 
     p_goto = sub.add_parser("goto", help="Move to map coordinates (mm)")
     p_goto.add_argument("x", type=int)
     p_goto.add_argument("y", type=int)
 
     p_dance = sub.add_parser("dance", help="Dance a pattern")
+    p_watch = sub.add_parser("mapwatch", help="Periodically save map snapshots")
+    p_watch.add_argument("interval_s", type=float, nargs="?", default=float(os.getenv("MAPWATCH_INTERVAL_S", "5")))
+    p_watch.add_argument("count", type=int, nargs="?", default=int(os.getenv("MAPWATCH_COUNT", "12")))
     p_dance.add_argument(
         "pattern", choices=["circle", "square", "figure8", "lissajous", "spin_crazy"]
     )
@@ -639,6 +734,10 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(goto(args.x, args.y))
     elif args.cmd == "dance":
         asyncio.run(dance(args.pattern, args.size, args.beat_ms))
+    elif args.cmd == "mapsnap":
+        asyncio.run(mapsnap())
+    elif args.cmd == "mapwatch":
+        asyncio.run(mapwatch(args.interval_s, args.count))
     else:
         parser.print_help()
 

@@ -359,6 +359,58 @@ async def _charger_position(client: RoborockMqttClientV1) -> Point | None:
     return int(data.charger.x), int(data.charger.y)
 
 
+def _offset_center_from_dock(dock: Point, radius_mm: int) -> Point:
+    """Return a center offset away from the dock by a safe buffer + radius.
+
+    This helps avoid waypoints falling inside the charger/dock restricted area,
+    which can cause the robot to spin and report 'Could not reach the target'.
+    """
+    buffer_mm = int(os.getenv("DOCK_BUFFER_MM", "300"))
+    # Offset along +Y by default; simple and deterministic.
+    offset_y = buffer_mm + radius_mm
+    return dock[0], dock[1] + offset_y
+
+
+async def _ensure_ready_for_goto(client: RoborockMqttClientV1) -> None:
+    """Ensure robot will accept goto: wake, undock, and pause if necessary.
+
+    Many firmwares accept APP_GOTO_TARGET best from a paused/active state.
+    We optionally issue start->pause to undock and get out of idle/charging.
+    Controlled by ENABLE_GOTO_PREFLIGHT (default: true).
+    """
+    if os.getenv("ENABLE_GOTO_PREFLIGHT", "1") not in {"1", "true", "True"}:
+        return
+
+    try:
+        st = await client.get_status()
+        state = (st.state_name or "").lower() if st else ""
+    except Exception:
+        state = ""
+
+    # States that usually don't need preflight
+    no_op_states = {"going_to_target", "spot", "cleaning", "returning"}
+    if state in no_op_states:
+        return
+
+    # Wake up if needed
+    try:
+        await client.send_command(RoborockCommand.APP_WAKEUP_ROBOT)
+    except Exception:
+        pass
+
+    # Start then pause to undock and enter an active paused state
+    try:
+        await client.send_command(RoborockCommand.APP_START)
+    except Exception:
+        pass
+    await asyncio.sleep(float(os.getenv("PREFLIGHT_START_DELAY_S", "0.4")))
+    try:
+        await client.send_command(RoborockCommand.APP_PAUSE)
+    except Exception:
+        pass
+    await asyncio.sleep(float(os.getenv("PREFLIGHT_PAUSE_DELAY_S", "0.3")))
+
+
 async def _vacuum_position(client: RoborockMqttClientV1) -> Point | None:
     """Return the vacuum position from the current map if available.
 
@@ -395,6 +447,14 @@ async def _wait_until_near(
     Returns True on near-arrival, False on timeout or if position is unavailable.
     """
 
+    # Allow overriding poll interval via env to reduce map spam
+    try:
+        env_poll = os.getenv("ARRIVAL_POLL_S")
+        if env_poll is not None:
+            poll_s = float(env_poll)
+    except Exception:
+        pass
+
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
         pos = await _vacuum_position(client)
@@ -415,10 +475,17 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
         print(f"🕺 Starting {pattern} dance (size: {size}mm, beat: {beat_ms}ms)")
         log = logging.getLogger("vacuum_ballet")
 
+        # Clamp size first so offset uses the final radius
+        size = _clamp_radius(size)
+        if size != int(os.getenv("DEFAULT_RADIUS", "800")):
+            print(f"   📐 Clamped dance size to: {size}mm")
+
         # Prefer dancing around the dock (charger) when available
-        center = await _charger_position(client)
-        if center:
-            print(f"   Centering near dock at: ({center[0]}, {center[1]}) mm")
+        dock = await _charger_position(client)
+        if dock:
+            center = _offset_center_from_dock(dock, size)
+            print(f"   Centering near dock at: ({dock[0]}, {dock[1]}) mm")
+            print(f"   Using offset center: ({center[0]}, {center[1]}) mm")
         else:
             # Next best: current robot position
             current_pos = await _vacuum_position(client)
@@ -447,10 +514,6 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
             center,
         )
 
-        size = _clamp_radius(size)
-        if size != int(os.getenv("DEFAULT_RADIUS", "800")):
-            print(f"   📐 Clamped dance size to: {size}mm")
-
         if pattern == "circle":
             points: Iterable[Point] = circle(center, size)
         elif pattern == "square":
@@ -464,13 +527,18 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
         else:
             raise ValueError("Unknown pattern")
 
-        # Beat timing (simple fixed delay per waypoint)
+        # Arrival gating and beat timing
+        arrival_mm = int(os.getenv("ARRIVAL_THRESHOLD_MM", "250"))
+        hop_timeout_s = float(os.getenv("WAYPOINT_TIMEOUT_S", "35"))
         min_beat_s = beat_ms / 1000
 
         # Generate all waypoints first to show preview
         waypoints = list(points)
         print(f"   🎯 Dance will visit {len(waypoints)} waypoints")
         log.info("generated %d waypoints", len(waypoints))
+
+        # Ensure robot will accept goto commands
+        await _ensure_ready_for_goto(client)
 
         for i, (px, py) in enumerate(waypoints, 1):
             # Keep stdout concise; detailed targets go to the log file
@@ -479,12 +547,26 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
             log.info("waypoint %d/%d -> (%d, %d)", i, len(waypoints), px, py)
 
             try:
-                await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
-                # Keep beat timing quiet on stdout
-                log.debug("beat sleep %.3fs", min_beat_s)
+                # Skip waypoints already within arrival threshold
+                current_pos = await _vacuum_position(client)
+                if current_pos is not None:
+                    dist = ((current_pos[0]-px)**2 + (current_pos[1]-py)**2) ** 0.5
+                    if dist <= arrival_mm:
+                        log.info("skip waypoint %d: already within %.0fmm (%.0fmm)", i, arrival_mm, dist)
+                        continue
 
-                # Simple beat-based timing (no arrival detection)
-                if min_beat_s > 0:
+                await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
+                # Prefer arrival gating; if it times out, fall back to beat
+                arrived = await _wait_until_near(
+                    client, (px, py), arrival_mm, timeout_s=hop_timeout_s
+                )
+                # Optional settle delay after near-arrival to let odometry catch up
+                if arrived:
+                    settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.2"))
+                    if settle_s > 0:
+                        await asyncio.sleep(settle_s)
+                elif min_beat_s > 0:
+                    log.debug("arrival timed out; beat sleep %.3fs", min_beat_s)
                     await asyncio.sleep(min_beat_s)
 
             except Exception as e:

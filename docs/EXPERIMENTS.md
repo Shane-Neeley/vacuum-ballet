@@ -37,3 +37,15 @@ uv run vacuum-ballet dance square 200 # Small 200mm square
 # Debug coordinates
 uv run vacuum-ballet where
 ```.
+
+Shanes-MacBook-Pro-Personal:vacuum-ballet shane$ uv run vacuum-ballet dance square 100 600
+🕺 Starting square dance (size: 100mm, beat: 600ms)
+   Centering near dock at: (25939, 25613) mm
+   📐 Clamped dance size to: 200mm
+   🎯 Dance will visit 5 waypoints
+   Step 1/5
+   Step 5/5
+   🎉 Dance complete!
+Shanes-MacBook-Pro-Personal:vacuum-ballet shane$ 
+
+After this it spins a bit and says "Could not reach the target". Not obvious why. Need to search online for the issue.

@@ -616,6 +616,7 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
         arrival_mm = int(os.getenv("ARRIVAL_THRESHOLD_MM", "250"))
         hop_timeout_s = float(os.getenv("WAYPOINT_TIMEOUT_S", "35"))
         min_beat_s = beat_ms / 1000
+        gating_enabled = os.getenv("ENABLE_ARRIVAL_GATING", "1") in {"1", "true", "True"}
 
         # Generate all waypoints first to show preview
         waypoints = list(points)
@@ -632,27 +633,34 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
             log.info("waypoint %d/%d -> (%d, %d)", i, len(waypoints), px, py)
 
             try:
-                # Skip waypoints already within arrival threshold
-                current_pos = await _vacuum_position(client)
-                if current_pos is not None:
-                    dist = ((current_pos[0]-px)**2 + (current_pos[1]-py)**2) ** 0.5
-                    if dist <= arrival_mm:
-                        log.info("skip waypoint %d: already within %.0fmm (%.0fmm)", i, arrival_mm, dist)
-                        continue
+                if gating_enabled:
+                    # Skip waypoints already within arrival threshold
+                    current_pos = await _vacuum_position(client)
+                    if current_pos is not None:
+                        dist = ((current_pos[0]-px)**2 + (current_pos[1]-py)**2) ** 0.5
+                        if dist <= arrival_mm:
+                            log.info("skip waypoint %d: already within %.0fmm (%.0fmm)", i, arrival_mm, dist)
+                            continue
 
                 await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
-                # Prefer arrival gating; if it times out, fall back to beat
-                arrived = await _wait_until_near(
-                    client, (px, py), arrival_mm, timeout_s=hop_timeout_s
-                )
-                # Optional settle delay after near-arrival to let odometry catch up
-                if arrived:
-                    settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.2"))
-                    if settle_s > 0:
-                        await asyncio.sleep(settle_s)
-                elif min_beat_s > 0:
-                    log.debug("arrival timed out; beat sleep %.3fs", min_beat_s)
-                    await asyncio.sleep(min_beat_s)
+
+                if gating_enabled:
+                    # Prefer arrival gating; if it times out, fall back to beat
+                    arrived = await _wait_until_near(
+                        client, (px, py), arrival_mm, timeout_s=hop_timeout_s
+                    )
+                    # Optional settle delay after near-arrival to let odometry catch up
+                    if arrived:
+                        settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.2"))
+                        if settle_s > 0:
+                            await asyncio.sleep(settle_s)
+                    elif min_beat_s > 0:
+                        log.debug("arrival timed out; beat sleep %.3fs", min_beat_s)
+                        await asyncio.sleep(min_beat_s)
+                else:
+                    # Beat-only mode for speed; no arrival detection
+                    if min_beat_s > 0:
+                        await asyncio.sleep(min_beat_s)
 
             except Exception as e:
                 log.exception("error sending waypoint %d: %s", i, e)

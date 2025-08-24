@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Iterator, List, Tuple
 
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 from roborock.const import ROBOROCK_S4_MAX
 from roborock.web_api import RoborockApiClient
 from roborock.roborock_typing import RoborockCommand
@@ -50,7 +50,7 @@ Point = Tuple[int, int]
 # ---------------------------------------------------------------------------
 
 
-def circle(center: Point, radius_mm: int, steps: int = 20) -> Iterator[Point]:
+def circle(center: Point, radius_mm: int, steps: int = 16) -> Iterator[Point]:
     """Generate points on a circle."""
 
     cx, cy = center
@@ -60,88 +60,36 @@ def circle(center: Point, radius_mm: int, steps: int = 20) -> Iterator[Point]:
 
 
 def square(center: Point, half_mm: int = 600) -> List[Point]:
-    """Return the corners of a square (closed path)."""
+    """Return corners and midpoints of a square for smoother movement."""
 
     cx, cy = center
+    # Include corner points and midpoints for more dynamic movement
     return [
-        (int(cx - half_mm), int(cy - half_mm)),
-        (int(cx + half_mm), int(cy - half_mm)),
-        (int(cx + half_mm), int(cy + half_mm)),
-        (int(cx - half_mm), int(cy + half_mm)),
-        (int(cx - half_mm), int(cy - half_mm)),
+        (int(cx - half_mm), int(cy - half_mm)),  # bottom-left corner
+        (int(cx), int(cy - half_mm)),  # bottom-middle
+        (int(cx + half_mm), int(cy - half_mm)),  # bottom-right corner
+        (int(cx + half_mm), int(cy)),  # right-middle
+        (int(cx + half_mm), int(cy + half_mm)),  # top-right corner
+        (int(cx), int(cy + half_mm)),  # top-middle
+        (int(cx - half_mm), int(cy + half_mm)),  # top-left corner
+        (int(cx - half_mm), int(cy)),  # left-middle
+        (int(cx - half_mm), int(cy - half_mm)),  # return to start
     ]
 
 
-def figure_eight(
-    center: Point, radius_mm: int = 800, steps: int = 24
-) -> Iterator[Point]:
-    """Generate a figure-eight (infinity symbol)."""
-
-    cx, cy = center
-    for i in range(steps):
-        t = 2 * math.pi * i / (steps - 1)
-        x = cx + radius_mm * math.sin(t)
-        y = cy + radius_mm * math.sin(t) * math.cos(t)
-        yield int(x), int(y)
-
-
-def lissajous(
-    center: Point,
-    ax: int = 800,
-    ay: int = 600,
-    a: int = 3,
-    b: int = 2,
-    delta: float = math.pi / 2,
-    steps: int = 32,
-) -> Iterator[Point]:
-    """Generate a basic Lissajous (figure-8) curve."""
-
-    cx, cy = center
-    for i in range(steps):
-        t = 2 * math.pi * i / steps
-        x = cx + ax * math.sin(a * t + delta)
-        y = cy + ay * math.sin(b * t)
-        yield int(x), int(y)
-
-
-def spin_crazy(center: Point, radius_mm: int = 400, steps: int = 20) -> Iterator[Point]:
-    """Generate erratic spinning and jerky movements near center position.
-
-    Creates a chaotic pattern with rapid direction changes, small spirals,
-    and sudden jerks to simulate 'crazy' movement.
+def spin(center: Point, radius_mm: int = 200, steps: int = 8) -> Iterator[Point]:
+    """Generate waypoints for continuous spinning in place.
+    
+    Creates a tight circle of waypoints around the center position to make
+    the robot appear to spin continuously. Uses a small radius to keep the
+    robot close to its starting position while creating rotational movement.
     """
-    import random
-
     cx, cy = center
-    # Set a consistent seed for reproducible 'craziness'
-    random.seed(42)
-
     for i in range(steps):
-        # Base circular motion with random radius variations
-        base_angle = 2 * math.pi * i / steps * 3  # 3x speed for more spinning
-
-        # Add random jerkiness - sudden direction changes
-        jerk_factor = random.uniform(0.3, 1.8)
-        angle_jitter = random.uniform(-math.pi / 2, math.pi / 2)
-        actual_angle = base_angle + angle_jitter
-
-        # Varying radius for erratic movement
-        current_radius = radius_mm * jerk_factor * random.uniform(0.2, 1.0)
-
-        # Add random offset for jerky movements
-        jerk_x = random.uniform(-radius_mm * 0.3, radius_mm * 0.3)
-        jerk_y = random.uniform(-radius_mm * 0.3, radius_mm * 0.3)
-
-        x = cx + current_radius * math.cos(actual_angle) + jerk_x
-        y = cy + current_radius * math.sin(actual_angle) + jerk_y
-
-        # Occasionally add dramatic jerks to random positions
-        if random.random() < 0.2:  # 20% chance of dramatic jerk
-            jerk_distance = radius_mm * random.uniform(0.5, 1.2)
-            jerk_angle = random.uniform(0, 2 * math.pi)
-            x = cx + jerk_distance * math.cos(jerk_angle)
-            y = cy + jerk_distance * math.sin(jerk_angle)
-
+        # Create a full rotation with multiple loops for continuous spinning
+        t = 2 * math.pi * i / steps
+        x = cx + radius_mm * math.cos(t)
+        y = cy + radius_mm * math.sin(t)
         yield int(x), int(y)
 
 
@@ -187,6 +135,7 @@ def _load_envs() -> None:
     ballet_env = base_dir / ".env.ballet"
     if ballet_env.exists():
         load_dotenv(ballet_env, override=False)
+
 
 async def _login():
     """Log in to Roborock cloud and return user and home data."""
@@ -338,14 +287,14 @@ async def goto(x: int, y: int) -> None:
         await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
     finally:
         await client.async_disconnect()
-        
+
+
 async def random_command() -> None:
     # Pick command from the list of commands in roborock_typing.py
     client = await _client()
     try:
         result = await client.send_command(RoborockCommand.GET_COLLISION_AVOID_STATUS)
         print(result)
-        print("Command executed successfully!")
     finally:
         await client.async_disconnect()
 
@@ -489,12 +438,12 @@ async def _ensure_ready_for_goto(client: RoborockMqttClientV1) -> None:
         await client.send_command(RoborockCommand.APP_START)
     except Exception:
         pass
-    await asyncio.sleep(float(os.getenv("PREFLIGHT_START_DELAY_S", "0.4")))
+    await asyncio.sleep(float(os.getenv("PREFLIGHT_START_DELAY_S", "0.2")))
     try:
         await client.send_command(RoborockCommand.APP_PAUSE)
     except Exception:
         pass
-    await asyncio.sleep(float(os.getenv("PREFLIGHT_PAUSE_DELAY_S", "0.3")))
+    await asyncio.sleep(float(os.getenv("PREFLIGHT_PAUSE_DELAY_S", "0.1")))
 
 
 async def _vacuum_position(client: RoborockMqttClientV1) -> Point | None:
@@ -563,7 +512,7 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
 
         # Clamp size first so offset uses the final radius
         size = _clamp_radius(size)
-        if size != int(os.getenv("DEFAULT_RADIUS", "800")):
+        if size != int(os.getenv("DEFAULT_RADIUS", "400")):
             print(f"   📐 Clamped dance size to: {size}mm")
 
         # Prefer dancing around the dock (charger) when available
@@ -604,20 +553,22 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
             points: Iterable[Point] = circle(center, size)
         elif pattern == "square":
             points = square(center, size)
-        elif pattern == "figure8":
-            points = figure_eight(center, size)
-        elif pattern == "lissajous":
-            points = lissajous(center, ax=size, ay=size)
-        elif pattern == "spin_crazy":
-            points = spin_crazy(center, size)
+        elif pattern == "spin":
+            points = spin(center, size)
         else:
-            raise ValueError("Unknown pattern")
+            raise ValueError(
+                f"Unknown pattern: {pattern}. Available patterns: circle, square, spin"
+            )
 
         # Arrival gating and beat timing
-        arrival_mm = int(os.getenv("ARRIVAL_THRESHOLD_MM", "250"))
-        hop_timeout_s = float(os.getenv("WAYPOINT_TIMEOUT_S", "35"))
+        arrival_mm = int(os.getenv("ARRIVAL_THRESHOLD_MM", "400"))
+        hop_timeout_s = float(os.getenv("WAYPOINT_TIMEOUT_S", "12"))
         min_beat_s = beat_ms / 1000
-        gating_enabled = os.getenv("ENABLE_ARRIVAL_GATING", "1") in {"1", "true", "True"}
+        gating_enabled = os.getenv("ENABLE_ARRIVAL_GATING", "1") in {
+            "1",
+            "true",
+            "True",
+        }
 
         # Generate all waypoints first to show preview
         waypoints = list(points)
@@ -638,9 +589,16 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
                     # Skip waypoints already within arrival threshold
                     current_pos = await _vacuum_position(client)
                     if current_pos is not None:
-                        dist = ((current_pos[0]-px)**2 + (current_pos[1]-py)**2) ** 0.5
+                        dist = (
+                            (current_pos[0] - px) ** 2 + (current_pos[1] - py) ** 2
+                        ) ** 0.5
                         if dist <= arrival_mm:
-                            log.info("skip waypoint %d: already within %.0fmm (%.0fmm)", i, arrival_mm, dist)
+                            log.info(
+                                "skip waypoint %d: already within %.0fmm (%.0fmm)",
+                                i,
+                                arrival_mm,
+                                dist,
+                            )
                             continue
 
                 await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
@@ -652,7 +610,7 @@ async def dance(pattern: str, size: int, beat_ms: int) -> None:
                     )
                     # Optional settle delay after near-arrival to let odometry catch up
                     if arrived:
-                        settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.2"))
+                        settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.05"))
                         if settle_s > 0:
                             await asyncio.sleep(settle_s)
                     elif min_beat_s > 0:
@@ -734,11 +692,16 @@ def main(argv: list[str] | None = None) -> None:
 
     p_dance = sub.add_parser("dance", help="Dance a pattern")
     p_watch = sub.add_parser("mapwatch", help="Periodically save map snapshots")
-    p_watch.add_argument("interval_s", type=float, nargs="?", default=float(os.getenv("MAPWATCH_INTERVAL_S", "5")))
-    p_watch.add_argument("count", type=int, nargs="?", default=int(os.getenv("MAPWATCH_COUNT", "12")))
-    p_dance.add_argument(
-        "pattern", choices=["circle", "square", "figure8", "lissajous", "spin_crazy"]
+    p_watch.add_argument(
+        "interval_s",
+        type=float,
+        nargs="?",
+        default=float(os.getenv("MAPWATCH_INTERVAL_S", "5")),
     )
+    p_watch.add_argument(
+        "count", type=int, nargs="?", default=int(os.getenv("MAPWATCH_COUNT", "12"))
+    )
+    p_dance.add_argument("pattern", choices=["circle", "square", "spin"])
     p_dance.add_argument(
         "size",
         type=int,
@@ -750,7 +713,7 @@ def main(argv: list[str] | None = None) -> None:
         "beat_ms",
         type=int,
         nargs="?",
-        default=int(os.getenv("DEFAULT_BEAT_MS", "1000")),
+        default=int(os.getenv("DEFAULT_BEAT_MS", "500")),
         help="Delay between points in milliseconds",
     )
 

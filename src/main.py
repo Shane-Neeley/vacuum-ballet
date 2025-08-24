@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Roborock Vacuum Ballet.
 
-Tiny CLI and pattern generators to choreograph a Roborock **S4 Max** using
+CLI and pattern generators to choreograph a Roborock **S4 Max** using
 simple ``goto`` waypoints.  The script logs in with the credentials from a
 ``.env`` file and exposes a few sub-commands:
 
@@ -40,6 +40,7 @@ from roborock.web_api import RoborockApiClient
 from roborock.roborock_typing import RoborockCommand
 from roborock.version_1_apis.roborock_mqtt_client_v1 import RoborockMqttClientV1
 from roborock.containers import DeviceData
+# import matplotlib.pyplot as plt
 
 Point = Tuple[int, int]
 
@@ -93,7 +94,7 @@ def lissajous(
     delta: float = math.pi / 2,
     steps: int = 32,
 ) -> Iterator[Point]:
-    """Generate a basic Lissajous curve."""
+    """Generate a basic Lissajous (figure-8) curve."""
 
     cx, cy = center
     for i in range(steps):
@@ -186,16 +187,6 @@ def _load_envs() -> None:
     ballet_env = base_dir / ".env.ballet"
     if ballet_env.exists():
         load_dotenv(ballet_env, override=False)
-
-    # Optional controls file inside .envs
-    controls_env = base_dir / ".envs" / "controls.env"
-    if controls_env.exists():
-        # Respect OS env values already set
-        # Only set keys that aren't present yet
-        vals = dotenv_values(controls_env)
-        for k, v in vals.items():
-            if k not in os.environ and v is not None:
-                os.environ[k] = v
 
 async def _login():
     """Log in to Roborock cloud and return user and home data."""
@@ -345,6 +336,16 @@ async def goto(x: int, y: int) -> None:
     try:
         logging.getLogger("vacuum_ballet").info("goto requested: (%d, %d)", x, y)
         await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
+    finally:
+        await client.async_disconnect()
+        
+async def random_command() -> None:
+    # Pick command from the list of commands in roborock_typing.py
+    client = await _client()
+    try:
+        result = await client.send_command(RoborockCommand.GET_COLLISION_AVOID_STATUS)
+        print(result)
+        print("Command executed successfully!")
     finally:
         await client.async_disconnect()
 
@@ -724,6 +725,8 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("clean", help="Start full cleaning cycle")
     sub.add_parser("dock", help="Return to charging dock")
     sub.add_parser("mapsnap", help="Save one lidar map snapshot to logs/maps")
+    sub.add_parser("random_command", help="Send a random command")
+    sub.add_parser("test_sound", help="Test sound-related commands")
 
     p_goto = sub.add_parser("goto", help="Move to map coordinates (mm)")
     p_goto.add_argument("x", type=int)
@@ -773,6 +776,8 @@ def main(argv: list[str] | None = None) -> None:
         asyncio.run(mapsnap())
     elif args.cmd == "mapwatch":
         asyncio.run(mapwatch(args.interval_s, args.count))
+    elif args.cmd == "random_command":
+        asyncio.run(random_command())
     else:
         parser.print_help()
 

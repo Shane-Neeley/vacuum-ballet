@@ -149,12 +149,17 @@ def main(argv: List[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="cmd")
     p_dance = sub.add_parser("dance", help="Dance a pattern")
     p_dance.add_argument("pattern", choices=sorted(PATTERNS.keys()))
-    p_dance.add_argument("size", type=int)
+    p_dance.add_argument("size", type=int, nargs="?", default=100)
     p_dance.add_argument("beat_ms", type=int, nargs="?", default=500)
+
+    p_beep = sub.add_parser("beep", help="Emit a simple beep")
+    p_beep.add_argument("times", type=int, nargs="?", default=1)
 
     args = parser.parse_args(argv)
     if args.cmd == "dance":
         dance(args.pattern, args.size, args.beat_ms)
+    elif args.cmd == "beep":
+        beep(args.times)
     else:
         parser.print_help()
 

@@ -22,11 +22,14 @@ Additional helpers are provided for common tasks:
 ## Quick start
 
 ```bash
-# Run a circle with 400 mm radius, pausing 500 ms between points
-uv run python src/main.py dance circle 400 500
+# Spin with defaults (100 mm radius, 500 ms beat)
+uv run vacuum-ballet dance spin
 
-# Trace a square with half-size 200 mm using default beat (500 ms)
-uv run python src/main.py dance square 200
+# Run a circle with 400 mm radius, pausing 500 ms between points
+uv run vacuum-ballet dance circle 400 500
+
+# Beep once
+uv run vacuum-ballet beep
 ```
 
 ## Development

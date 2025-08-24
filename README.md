@@ -1,80 +1,56 @@
-# RoboRock Vacuum Ballet Project 🕺🤖
+# Vacuum Ballet
 
-Learn-by-doing control of a Roborock **S4 Max** using Python. This repo stays on the _easy, no-disassembly_ path:
+Minimal helpers to choreograph a vacuum robot using simple waypoints.
+The project now focuses on three easy dance patterns:
 
-- Uses the `python-roborock` SDK with your Roborock app credentials.
-- Sends simple **go‑to** waypoints to choreograph circles, squares, figure‑eights, and Lissajous patterns.
-- Includes a tiny CLI: `vacuum-ballet` for beeps, status, cleaning and docking.
+- **circle** – move in a circle of a given radius
+- **square** – trace a square and return to the start
+- **spin** – a tight circle that makes the robot appear to spin in place
 
-> Safety first: test in a clear 2×2 m area, start with small radii, and keep people/pets away.
+`src/main.py` contains the geometry helpers and a tiny CLI which prints the
+waypoints for a selected pattern. The code is intentionally small and free of
+robot‑specific dependencies so it can be studied or extended easily.
+
+Additional helpers are provided for common tasks:
+
+- load environment variables from a ``.env`` file
+- list available devices (placeholder implementation)
+- emit simple ``beep`` messages
+- generate random or cleaning patterns
+- save a plotted path to an image file
 
 ## Quick start
 
 ```bash
-# 1) Sync dependencies (creates a .venv)
-uv sync
+# Spin with defaults (100 mm radius, 500 ms beat)
+uv run vacuum-ballet dance spin
 
-# 2) Copy .env.example to .env and set values (credentials + controls)
-# See .env.example for all variables
+# Run a circle with 400 mm radius, pausing 500 ms between points
+uv run vacuum-ballet dance circle 400 500
 
-# 3) See devices on your account (S4 Max is model roborock.vacuum.a19)
-uv run vacuum-ballet devices
-
-# 4) Check status and battery
-uv run vacuum-ballet status
-
-# 5) Start cleaning
-uv run vacuum-ballet clean
-
-# 6) Return to dock
-uv run vacuum-ballet dock
-
-# 7) Tiny motion (adjust x/y to a near point on your map, units: millimetres)
-uv run vacuum-ballet goto 32500 27500
-
-# 8) Dance! (pattern radius_mm beat_ms)
-#    The routine centres on the dock if map data is available.
-uv run vacuum-ballet dance figure8 100 600
-
-More dances:
-
-uv run vacuum-ballet dance circle 400 1000
-uv run vacuum-ballet dance square 200 600
-uv run vacuum-ballet dance figure8 100 600
-uv run vacuum-ballet dance spin_crazy 100 600
-
-
-# 10) Map snapshots
-# One shot:
-uv run vacuum-ballet mapsnap
-# Watch (interval seconds, count):
-uv run vacuum-ballet mapwatch 2 30
-uv run vacuum-ballet dance square 100 600
-
-# 9) Run tests
-uv run pytest
+# Beep once
+uv run vacuum-ballet beep
 ```
 
-## What you'll learn
+## Development
 
-- Differential-drive motion by **waypoints**
-- Basic timing & beats (BPM)
-- Simple Python robotics programming
-- All in one clean, readable file!
+```bash
+# Run tests
+uv run pytest
+```
 
 ## Repo layout
 
 ```
 vacuum-ballet/
-  pyproject.toml     # Project configuration
-  requirements.txt   # Alternative dependencies
   README.md
-  BUILDING.md
   src/
-    main.py          # All the code in one simple file!
+    main.py          # geometry and CLI
   tests/
+    test_cli.py
+    test_dance.py
+    test_features.py
     test_main.py
-    test_commands.py
 ```
 
-See **BUILDING.md** for deeper instructions and agent-friendly tasks.
+Enjoy experimenting with simple dance moves!

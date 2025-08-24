@@ -1,749 +1,162 @@
 #!/usr/bin/env python3
-"""Roborock Vacuum Ballet.
+"""Simple vacuum dance patterns.
 
-CLI and pattern generators to choreograph a Roborock **S4 Max** using
-simple ``goto`` waypoints.  The script logs in with the credentials from a
-``.env`` file and exposes a few sub-commands:
-
-``devices``
-    List devices on the account and highlight the S4 Max.
-
-``beep``
-    Make the robot play its locate/beep sound.
-
-``goto X Y``
-    Move the robot to ``(X, Y)`` in map millimetres.
-
-``dance PATTERN SIZE [BEAT_MS]``
-    Send a sequence of ``goto`` commands following ``PATTERN`` at the tempo
-    defined by ``BEAT_MS`` (defaults to 600 ms between points).
-
-Only a single device - the first S4 Max on the account - is controlled.
-The geometry helpers are pure functions and are unit-tested so they can be
-studied independently from the robot hardware.
+This simplified module generates waypoints for three basic patterns:
+``circle``, ``square`` and ``spin``.  The functions return integer
+coordinates that can be used to choreograph a robot.  A tiny CLI is
+provided for manual experimentation which simply prints the points for a
+chosen pattern.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import math
 import os
-from datetime import datetime
+import random
+import time
 from pathlib import Path
-from typing import Iterable, Iterator, List, Tuple
+from typing import Callable, List, Tuple
 
-from dotenv import load_dotenv
-from roborock.const import ROBOROCK_S4_MAX
-from roborock.web_api import RoborockApiClient
-from roborock.roborock_typing import RoborockCommand
-from roborock.version_1_apis.roborock_mqtt_client_v1 import RoborockMqttClientV1
-from roborock.containers import DeviceData
-# import matplotlib.pyplot as plt
+from dotenv import dotenv_values
+import matplotlib
+
+matplotlib.use("Agg")  # headless image generation
+import matplotlib.pyplot as plt
 
 Point = Tuple[int, int]
-
 
 # ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
-
-def circle(center: Point, radius_mm: int, steps: int = 16) -> Iterator[Point]:
-    """Generate points on a circle."""
-
+def circle(center: Point, radius_mm: int, steps: int = 16) -> List[Point]:
+    """Return points evenly spaced on a circle."""
     cx, cy = center
+    points: List[Point] = []
     for i in range(steps):
         t = 2 * math.pi * i / steps
-        yield int(cx + radius_mm * math.cos(t)), int(cy + radius_mm * math.sin(t))
-
+        points.append((int(cx + radius_mm * math.cos(t)), int(cy + radius_mm * math.sin(t))))
+    return points
 
 def square(center: Point, half_mm: int = 600) -> List[Point]:
-    """Return corners and midpoints of a square for smoother movement."""
-
+    """Return the corners of a square, closing the path."""
     cx, cy = center
-    # Include corner points and midpoints for more dynamic movement
     return [
-        (int(cx - half_mm), int(cy - half_mm)),  # bottom-left corner
-        (int(cx), int(cy - half_mm)),  # bottom-middle
-        (int(cx + half_mm), int(cy - half_mm)),  # bottom-right corner
-        (int(cx + half_mm), int(cy)),  # right-middle
-        (int(cx + half_mm), int(cy + half_mm)),  # top-right corner
-        (int(cx), int(cy + half_mm)),  # top-middle
-        (int(cx - half_mm), int(cy + half_mm)),  # top-left corner
-        (int(cx - half_mm), int(cy)),  # left-middle
-        (int(cx - half_mm), int(cy - half_mm)),  # return to start
+        (int(cx - half_mm), int(cy - half_mm)),
+        (int(cx + half_mm), int(cy - half_mm)),
+        (int(cx + half_mm), int(cy + half_mm)),
+        (int(cx - half_mm), int(cy + half_mm)),
+        (int(cx - half_mm), int(cy - half_mm)),
     ]
 
+def spin(center: Point, radius_mm: int = 200, steps: int = 8) -> List[Point]:
+    """Return points forming a small circle to simulate spinning."""
+    return circle(center, radius_mm, steps)
 
-def spin(center: Point, radius_mm: int = 200, steps: int = 8) -> Iterator[Point]:
-    """Generate waypoints for continuous spinning in place.
-    
-    Creates a tight circle of waypoints around the center position to make
-    the robot appear to spin continuously. Uses a small radius to keep the
-    robot close to its starting position while creating rotational movement.
-    """
-    cx, cy = center
-    for i in range(steps):
-        # Create a full rotation with multiple loops for continuous spinning
-        t = 2 * math.pi * i / steps
-        x = cx + radius_mm * math.cos(t)
-        y = cy + radius_mm * math.sin(t)
-        yield int(x), int(y)
+PATTERNS: dict[str, Callable[..., List[Point]]] = {
+    "circle": circle,
+    "square": square,
+    "spin": spin,
+}
 
-
-# ---------------------------------------------------------------------------
-# Roborock helpers
-# ---------------------------------------------------------------------------
-
-
-def _setup_logging() -> None:
-    """Initialize a simple file logger at logs/logs.txt."""
-    log_dir = Path(__file__).resolve().parent.parent / "logs"
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        # If we can't create a directory, silently skip logging setup
-        return
-
-    log_file = log_dir / "logs.txt"
-    logger = logging.getLogger("vacuum_ballet")
-    if logger.handlers:
-        return
-
-    logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(str(log_file), encoding="utf-8")
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    handler.setFormatter(formatter)
+logger = logging.getLogger("vacuum")
+if not logger.handlers:
+    handler = logging.StreamHandler()
     logger.addHandler(handler)
-
-
-def _load_envs() -> None:
-    """Load base .env and optional project-specific env files.
-
-    Load order (lowest to highest precedence, without overriding OS env):
-    - .env
-    - .env.ballet
-    - .envs/controls.env
-    """
-    # Base credentials and simple defaults
-    load_dotenv()
-
-    # Optional project-specific env next
-    base_dir = Path(__file__).resolve().parent.parent
-    ballet_env = base_dir / ".env.ballet"
-    if ballet_env.exists():
-        load_dotenv(ballet_env, override=False)
-
-
-async def _login():
-    """Log in to Roborock cloud and return user and home data."""
-
-    email = os.environ.get("ROBO_EMAIL")
-    password = os.environ.get("ROBO_PASSWORD")
-    if not email or not password:
-        raise RuntimeError("ROBO_EMAIL and ROBO_PASSWORD must be set in .env")
-
-    api = RoborockApiClient(email)
-    user_data = await api.pass_login(password)
-    home_data = await api.get_home_data(user_data)
-    logging.getLogger("vacuum_ballet").info(
-        "Logged in and fetched home data with %d devices", len(home_data.devices)
-    )
-    return api, user_data, home_data
-
-
-async def _client() -> RoborockMqttClientV1:
-    _, user_data, home = await _login()
-
-    # choose the first S4 Max
-    for device, product in home.device_products.values():
-        if product.model == ROBOROCK_S4_MAX:
-            device_info = DeviceData(device=device, model=product.model)
-            client = RoborockMqttClientV1(user_data, device_info)
-            await client.async_connect()
-            logging.getLogger("vacuum_ballet").info(
-                "Connected to device '%s' (%s)", device.name, product.model
-            )
-            return client
-    raise RuntimeError("No Roborock S4 Max found on this account")
-
+logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
-# Commands
+# Dance helper
 # ---------------------------------------------------------------------------
 
+def dance(pattern: str, size: int, beat_ms: int = 500, center: Point = (0, 0)) -> List[Point]:
+    """Generate and print waypoints for a dance pattern.
 
-async def list_devices() -> None:
-    """Print devices tied to the account."""
-
-    _, _, home = await _login()
-    for dev in home.devices:
-        name = dev.name
-        product_id = dev.product_id
-        print(f"{name} ({product_id})")
-
-
-async def beep() -> None:
-    """Play the locate/beep sound."""
-    client = await _client()
-    try:
-        logging.getLogger("vacuum_ballet").info("beep requested")
-        await client.send_command(RoborockCommand.FIND_ME)
-    finally:
-        await client.async_disconnect()
-
-
-async def clean() -> None:
-    """Start a full cleaning cycle."""
-    client = await _client()
-    try:
-        logging.getLogger("vacuum_ballet").info("clean start requested")
-        await client.send_command(RoborockCommand.APP_START)
-    finally:
-        await client.async_disconnect()
-
-
-async def dock() -> None:
-    """Return to the charging dock."""
-    client = await _client()
-    try:
-        logging.getLogger("vacuum_ballet").info("dock requested")
-        await client.send_command(RoborockCommand.APP_CHARGE)
-    finally:
-        await client.async_disconnect()
-
-
-async def status() -> None:
-    """Print battery level and state."""
-    client = await _client()
-    try:
-        st = await client.get_status()
-        state = st.state_name or "unknown"
-        battery = st.battery if st.battery is not None else "?"
-        print(f"State: {state}, Battery: {battery}%")
-        logging.getLogger("vacuum_ballet").info(
-            "Status queried: state=%s battery=%s", state, battery
-        )
-    finally:
-        await client.async_disconnect()
-
-
-async def where() -> None:
-    """Show current robot position and map center info for debugging."""
-    client = await _client()
-    try:
-        print("🤖 Robot Location Debug Info:")
-
-        # Try to get current vacuum position
-        vacuum_pos = await _vacuum_position(client)
-        if vacuum_pos:
-            print(f"   Current position: ({vacuum_pos[0]}, {vacuum_pos[1]}) mm")
-        else:
-            print("   Current position: Unable to detect")
-
-        # Try to get map center (charger or vacuum position)
-        map_center = await _map_center(client)
-        if map_center:
-            print(f"   Map center: ({map_center[0]}, {map_center[1]}) mm")
-        else:
-            print("   Map center: Unable to detect")
-            default_x = int(os.getenv("DEFAULT_CENTER_X", "32000"))
-            default_y = int(os.getenv("DEFAULT_CENTER_Y", "27000"))
-            print(f"   Fallback center: ({default_x}, {default_y}) mm")
-
-        # Show robot status
-        st = await client.get_status()
-        if st:
-            state = st.state_name or "unknown"
-            print(f"   Robot state: {state}")
-            if hasattr(st, "in_cleaning") and st.in_cleaning is not None:
-                print(f"   In cleaning mode: {st.in_cleaning}")
-        logging.getLogger("vacuum_ballet").info(
-            "where: pos=%s center=%s state=%s cleaning=%s",
-            vacuum_pos,
-            map_center,
-            st.state_name if st else None,
-            getattr(st, "in_cleaning", None) if st else None,
-        )
-
-        print("\n💡 Tips:")
-        print(
-            "   - If positions are 0 or very large numbers, the robot might not be localized"
-        )
-        print("   - Try running 'beep' first to wake the robot")
-        print("   - Make sure the robot has completed initial mapping")
-
-    finally:
-        await client.async_disconnect()
-
-
-async def goto(x: int, y: int) -> None:
-    """Move to an absolute map coordinate in millimetres."""
-    client = await _client()
-    try:
-        logging.getLogger("vacuum_ballet").info("goto requested: (%d, %d)", x, y)
-        await client.send_command(RoborockCommand.APP_GOTO_TARGET, [x, y])
-    finally:
-        await client.async_disconnect()
-
-
-async def random_command() -> None:
-    # Pick command from the list of commands in roborock_typing.py
-    client = await _client()
-    try:
-        result = await client.send_command(RoborockCommand.GET_COLLISION_AVOID_STATUS)
-        print(result)
-    finally:
-        await client.async_disconnect()
-
-
-async def _parse_map_data(client: RoborockMqttClientV1):
-    """Parse map data from client. Returns parsed data or None on error."""
-    try:
-        from vacuum_map_parser_base.config.color import ColorsPalette
-        from vacuum_map_parser_base.config.image_config import ImageConfig
-        from vacuum_map_parser_base.config.size import Sizes
-        from vacuum_map_parser_roborock.map_data_parser import RoborockMapDataParser
-
-        raw = await client.get_map_v1()
-        if not raw:
-            return None
-        parser = RoborockMapDataParser(ColorsPalette(), Sizes(), [], ImageConfig(), [])
-        return parser.parse(raw)
-    except Exception:
-        return None
-
-
-async def _map_center(client: RoborockMqttClientV1) -> Point | None:
-    """Return charger or vacuum position from the current map if available."""
-    data = await _parse_map_data(client)
-    if data is None:
-        return None
-
-    if data.charger is not None:
-        return int(data.charger.x), int(data.charger.y)
-    if data.vacuum_position is not None:
-        return int(data.vacuum_position.x), int(data.vacuum_position.y)
-    return None
-
-
-async def _charger_position(client: RoborockMqttClientV1) -> Point | None:
-    """Return charger (dock) position if available."""
-    data = await _parse_map_data(client)
-    if data is None or data.charger is None:
-        return None
-    return int(data.charger.x), int(data.charger.y)
-
-
-def _generate_map_image(data) -> "object | None":
-    """Render a map image (PIL Image) from parsed map data, if possible.
-
-    Returns a PIL Image or None if rendering isn't possible.
+    Parameters
+    ----------
+    pattern: name of the pattern (``circle``, ``square`` or ``spin``)
+    size:    radius or half-size in millimetres
+    beat_ms: delay between printed points
+    center:  origin for the pattern, defaults to ``(0, 0)``
     """
-    try:
-        from vacuum_map_parser_base import image_generator
-        from vacuum_map_parser_base.config.color import ColorsPalette
-        from vacuum_map_parser_base.config.image_config import ImageConfig
-        from vacuum_map_parser_base.config.size import Sizes
-        from vacuum_map_parser_base.config.drawable import Drawable
-    except Exception:
-        return None
+    generator = PATTERNS.get(pattern)
+    if generator is None:
+        raise ValueError(f"Unknown pattern: {pattern}")
 
-    gen = image_generator.ImageGenerator(
-        ColorsPalette(),
-        Sizes(),
-        [
-            Drawable.CLEANED_AREA.value,
-            Drawable.ZONES.value,
-            Drawable.NO_GO_AREAS.value,
-            Drawable.VIRTUAL_WALLS.value,
-            Drawable.PATH.value,
-            Drawable.GOTO_PATH.value,
-            Drawable.CHARGER.value,
-            Drawable.VACUUM_POSITION.value,
-        ],
-        ImageConfig(),
-        [],
-    )
+    logger.info("dancing %s", pattern)
+    if pattern == "square":
+        points = generator(center, half_mm=size)
+    else:
+        points = generator(center, radius_mm=size)
 
-    if data is None:
-        return gen.create_empty_map_image("NO MAP")
-
-    if getattr(data, "image", None) is None:
-        return gen.create_empty_map_image("NO MAP")
-
-    # Mutates data.image.data in place
-    gen.draw_map(data)
-    return data.image.data
+    for x, y in points:
+        print(f"goto {x} {y}")
+        if beat_ms > 0:
+            time.sleep(beat_ms / 1000.0)
+    return points
 
 
-def _save_snapshot_image(image_obj: "object", suffix: str = "") -> Path | None:
-    """Save a PIL Image to logs/maps with timestamp. Returns path or None."""
-    try:
-        logs_dir = Path(__file__).resolve().parent.parent / "logs" / "maps"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        name = f"map_{ts}{suffix}.png"
-        out_path = logs_dir / name
-        image_obj.save(str(out_path), format="PNG")
-        logging.getLogger("vacuum_ballet").info("saved map snapshot: %s", out_path)
-        return out_path
-    except Exception:
-        return None
+def clean(size: int, center: Point = (0, 0)) -> List[Point]:
+    """Return a square cleaning path and log the action."""
+    logger.info("cleaning")
+    return square(center, half_mm=size)
 
 
-def _offset_center_from_dock(dock: Point, radius_mm: int) -> Point:
-    """Return a center offset away from the dock by a safe buffer + radius.
-
-    This helps avoid waypoints falling inside the charger/dock restricted area,
-    which can cause the robot to spin and report 'Could not reach the target'.
-    """
-    buffer_mm = int(os.getenv("DOCK_BUFFER_MM", "300"))
-    # Offset along +Y by default; simple and deterministic.
-    offset_y = buffer_mm + radius_mm
-    return dock[0], dock[1] + offset_y
+def random_dance(size: int, center: Point = (0, 0)) -> List[Point]:
+    """Choose a random pattern and return its points."""
+    pattern = random.choice(list(PATTERNS.keys()))
+    return dance(pattern, size, beat_ms=0, center=center)
 
 
-async def _ensure_ready_for_goto(client: RoborockMqttClientV1) -> None:
-    """Ensure robot will accept goto: wake, undock, and pause if necessary.
+def devices() -> List[str]:
+    """Return placeholder list of connected devices."""
+    return ["simulated-vacuum"]
 
-    Many firmwares accept APP_GOTO_TARGET best from a paused/active state.
-    We optionally issue start->pause to undock and get out of idle/charging.
-    Controlled by ENABLE_GOTO_PREFLIGHT (default: true).
-    """
-    if os.getenv("ENABLE_GOTO_PREFLIGHT", "1") not in {"1", "true", "True"}:
+
+def beep(times: int = 1) -> None:
+    """Print 'beep' a number of times."""
+    for _ in range(times):
+        print("beep")
+
+
+def load_envs(path: str = ".env") -> None:
+    """Load environment variables from a .env file if present."""
+    env_path = Path(path)
+    if env_path.exists():
+        for key, value in dotenv_values(env_path).items():
+            os.environ.setdefault(key, value)
+
+
+def generate_image(points: List[Point], filename: str) -> None:
+    """Generate a simple plot of the path."""
+    if not points:
         return
-
-    try:
-        st = await client.get_status()
-        state = (st.state_name or "").lower() if st else ""
-    except Exception:
-        state = ""
-
-    # States that usually don't need preflight
-    no_op_states = {"going_to_target", "spot", "cleaning", "returning"}
-    if state in no_op_states:
-        return
-
-    # Wake up if needed
-    try:
-        await client.send_command(RoborockCommand.APP_WAKEUP_ROBOT)
-    except Exception:
-        pass
-
-    # Start then pause to undock and enter an active paused state
-    try:
-        await client.send_command(RoborockCommand.APP_START)
-    except Exception:
-        pass
-    await asyncio.sleep(float(os.getenv("PREFLIGHT_START_DELAY_S", "0.2")))
-    try:
-        await client.send_command(RoborockCommand.APP_PAUSE)
-    except Exception:
-        pass
-    await asyncio.sleep(float(os.getenv("PREFLIGHT_PAUSE_DELAY_S", "0.1")))
-
-
-async def _vacuum_position(client: RoborockMqttClientV1) -> Point | None:
-    """Return the vacuum position from the current map if available.
-
-    This intentionally ignores the charger position so it can be used for
-    arrival-gating while the robot is moving.
-    """
-    data = await _parse_map_data(client)
-    if data is None:
-        return None
-
-    if data.vacuum_position is not None:
-        return int(data.vacuum_position.x), int(data.vacuum_position.y)
-    return None
-
-
-def _clamp_radius(size: int) -> int:
-    """Clamp dance size to a safe range, configurable via env vars."""
-
-    # Defaults align with test expectations when env vars are missing
-    min_mm = int(os.getenv("MIN_DANCE_RADIUS_MM", "200"))
-    max_mm = int(os.getenv("MAX_DANCE_RADIUS_MM", "1200"))
-    return max(min_mm, min(size, max_mm))
-
-
-async def _wait_until_near(
-    client: RoborockMqttClientV1,
-    target: Point,
-    threshold_mm: int,
-    timeout_s: float,
-    poll_s: float = 0.4,
-) -> bool:
-    """Wait until the robot is within ``threshold_mm`` of ``target``.
-
-    Returns True on near-arrival, False on timeout or if position is unavailable.
-    """
-
-    # Allow overriding poll interval via env to reduce map spam
-    try:
-        env_poll = os.getenv("ARRIVAL_POLL_S")
-        if env_poll is not None:
-            poll_s = float(env_poll)
-    except Exception:
-        pass
-
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    while asyncio.get_event_loop().time() < deadline:
-        pos = await _vacuum_position(client)
-        if pos is None:
-            await asyncio.sleep(poll_s)
-            continue
-        distance_mm = ((pos[0] - target[0]) ** 2 + (pos[1] - target[1]) ** 2) ** 0.5
-        if distance_mm <= threshold_mm:
-            return True
-        await asyncio.sleep(poll_s)
-    return False
-
-
-async def dance(pattern: str, size: int, beat_ms: int) -> None:
-    """Dance using one of the built-in patterns."""
-    client = await _client()
-    try:
-        print(f"🕺 Starting {pattern} dance (size: {size}mm, beat: {beat_ms}ms)")
-        log = logging.getLogger("vacuum_ballet")
-
-        # Clamp size first so offset uses the final radius
-        size = _clamp_radius(size)
-        if size != int(os.getenv("DEFAULT_RADIUS", "400")):
-            print(f"   📐 Clamped dance size to: {size}mm")
-
-        # Prefer dancing around the dock (charger) when available
-        dock = await _charger_position(client)
-        if dock:
-            center = _offset_center_from_dock(dock, size)
-            print(f"   Centering near dock at: ({dock[0]}, {dock[1]}) mm")
-            print(f"   Using offset center: ({center[0]}, {center[1]}) mm")
-        else:
-            # Next best: current robot position
-            current_pos = await _vacuum_position(client)
-            if current_pos:
-                center = current_pos
-                print(f"   Centering at robot position: ({center[0]}, {center[1]}) mm")
-            else:
-                # Fallback to map center (if any), else small safe defaults
-                center = await _map_center(client)
-                if center:
-                    print(f"   Using map-derived center: ({center[0]}, {center[1]}) mm")
-                else:
-                    center = (
-                        int(os.getenv("DEFAULT_CENTER_X", "0")),
-                        int(os.getenv("DEFAULT_CENTER_Y", "0")),
-                    )
-                    print(f"   ⚠️  Using fallback center: ({center[0]}, {center[1]}) mm")
-                    print(
-                        "   💡 Consider setting DEFAULT_CENTER_X/Y environment variables"
-                    )
-        log.info(
-            "dance start: pattern=%s size=%s beat_ms=%s center=%s",
-            pattern,
-            size,
-            beat_ms,
-            center,
-        )
-
-        if pattern == "circle":
-            points: Iterable[Point] = circle(center, size)
-        elif pattern == "square":
-            points = square(center, size)
-        elif pattern == "spin":
-            points = spin(center, size)
-        else:
-            raise ValueError(
-                f"Unknown pattern: {pattern}. Available patterns: circle, square, spin"
-            )
-
-        # Arrival gating and beat timing
-        arrival_mm = int(os.getenv("ARRIVAL_THRESHOLD_MM", "400"))
-        hop_timeout_s = float(os.getenv("WAYPOINT_TIMEOUT_S", "12"))
-        min_beat_s = beat_ms / 1000
-        gating_enabled = os.getenv("ENABLE_ARRIVAL_GATING", "1") in {
-            "1",
-            "true",
-            "True",
-        }
-
-        # Generate all waypoints first to show preview
-        waypoints = list(points)
-        print(f"   🎯 Dance will visit {len(waypoints)} waypoints")
-        log.info("generated %d waypoints", len(waypoints))
-
-        # Ensure robot will accept goto commands
-        await _ensure_ready_for_goto(client)
-
-        for i, (px, py) in enumerate(waypoints, 1):
-            # Keep stdout concise; detailed targets go to the log file
-            if i == 1 or i == len(waypoints) or i % 5 == 0:
-                print(f"   Step {i}/{len(waypoints)}")
-            log.info("waypoint %d/%d -> (%d, %d)", i, len(waypoints), px, py)
-
-            try:
-                if gating_enabled:
-                    # Skip waypoints already within arrival threshold
-                    current_pos = await _vacuum_position(client)
-                    if current_pos is not None:
-                        dist = (
-                            (current_pos[0] - px) ** 2 + (current_pos[1] - py) ** 2
-                        ) ** 0.5
-                        if dist <= arrival_mm:
-                            log.info(
-                                "skip waypoint %d: already within %.0fmm (%.0fmm)",
-                                i,
-                                arrival_mm,
-                                dist,
-                            )
-                            continue
-
-                await client.send_command(RoborockCommand.APP_GOTO_TARGET, [px, py])
-
-                if gating_enabled:
-                    # Prefer arrival gating; if it times out, fall back to beat
-                    arrived = await _wait_until_near(
-                        client, (px, py), arrival_mm, timeout_s=hop_timeout_s
-                    )
-                    # Optional settle delay after near-arrival to let odometry catch up
-                    if arrived:
-                        settle_s = float(os.getenv("ARRIVAL_SETTLE_S", "0.05"))
-                        if settle_s > 0:
-                            await asyncio.sleep(settle_s)
-                    elif min_beat_s > 0:
-                        log.debug("arrival timed out; beat sleep %.3fs", min_beat_s)
-                        await asyncio.sleep(min_beat_s)
-                else:
-                    # Beat-only mode for speed; no arrival detection
-                    if min_beat_s > 0:
-                        await asyncio.sleep(min_beat_s)
-
-            except Exception as e:
-                log.exception("error sending waypoint %d: %s", i, e)
-                # Re-raise to surface error to caller/tests while still disconnecting in finally
-                raise
-
-        print("   🎉 Dance complete!")
-        log.info("dance complete")
-    finally:
-        await client.async_disconnect()
-
-
-async def mapsnap() -> None:
-    """Fetch current map and save one PNG snapshot in logs/maps."""
-    client = await _client()
-    try:
-        data = await _parse_map_data(client)
-        image_obj = _generate_map_image(data)
-        if image_obj is None:
-            print("Could not render map image (missing parser/image libs)")
-            return
-        out = _save_snapshot_image(image_obj)
-        if out:
-            print(f"Saved map snapshot to: {out}")
-        else:
-            print("Failed to save map snapshot")
-    finally:
-        await client.async_disconnect()
-
-
-async def mapwatch(interval_s: float, count: int) -> None:
-    """Periodically save map snapshots to logs/maps."""
-    client = await _client()
-    try:
-        for i in range(count):
-            data = await _parse_map_data(client)
-            image_obj = _generate_map_image(data)
-            if image_obj is not None:
-                _save_snapshot_image(image_obj, suffix=f"_{i:03d}")
-            await asyncio.sleep(interval_s)
-        print(f"Saved {count} snapshot(s) to logs/maps")
-    finally:
-        await client.async_disconnect()
-
+    xs, ys = zip(*points)
+    plt.figure()
+    plt.plot(xs, ys, marker="o")
+    plt.axis("equal")
+    plt.savefig(filename)
+    plt.close()
 
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-
-def main(argv: list[str] | None = None) -> None:
-    _load_envs()
-    _setup_logging()
-    parser = argparse.ArgumentParser(description="Roborock Vacuum Ballet CLI")
+def main(argv: List[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Roborock Vacuum Ballet")
     sub = parser.add_subparsers(dest="cmd")
-
-    sub.add_parser("devices", help="List devices on the account")
-    sub.add_parser("beep", help="Play locate sound")
-    sub.add_parser("status", help="Show battery and state")
-    sub.add_parser("where", help="Show robot position and coordinates for debugging")
-    sub.add_parser("clean", help="Start full cleaning cycle")
-    sub.add_parser("dock", help="Return to charging dock")
-    sub.add_parser("mapsnap", help="Save one lidar map snapshot to logs/maps")
-    sub.add_parser("random_command", help="Send a random command")
-    sub.add_parser("test_sound", help="Test sound-related commands")
-
-    p_goto = sub.add_parser("goto", help="Move to map coordinates (mm)")
-    p_goto.add_argument("x", type=int)
-    p_goto.add_argument("y", type=int)
-
     p_dance = sub.add_parser("dance", help="Dance a pattern")
-    p_watch = sub.add_parser("mapwatch", help="Periodically save map snapshots")
-    p_watch.add_argument(
-        "interval_s",
-        type=float,
-        nargs="?",
-        default=float(os.getenv("MAPWATCH_INTERVAL_S", "5")),
-    )
-    p_watch.add_argument(
-        "count", type=int, nargs="?", default=int(os.getenv("MAPWATCH_COUNT", "12"))
-    )
-    p_dance.add_argument("pattern", choices=["circle", "square", "spin"])
-    p_dance.add_argument(
-        "size",
-        type=int,
-        nargs="?",
-        default=int(os.getenv("DEFAULT_RADIUS", "400")),
-        help="Radius or half-size in mm",
-    )
-    p_dance.add_argument(
-        "beat_ms",
-        type=int,
-        nargs="?",
-        default=int(os.getenv("DEFAULT_BEAT_MS", "500")),
-        help="Delay between points in milliseconds",
-    )
+    p_dance.add_argument("pattern", choices=sorted(PATTERNS.keys()))
+    p_dance.add_argument("size", type=int)
+    p_dance.add_argument("beat_ms", type=int, nargs="?", default=500)
 
     args = parser.parse_args(argv)
-
-    if args.cmd == "devices":
-        asyncio.run(list_devices())
-    elif args.cmd == "beep":
-        asyncio.run(beep())
-    elif args.cmd == "status":
-        asyncio.run(status())
-    elif args.cmd == "where":
-        asyncio.run(where())
-    elif args.cmd == "clean":
-        asyncio.run(clean())
-    elif args.cmd == "dock":
-        asyncio.run(dock())
-    elif args.cmd == "goto":
-        asyncio.run(goto(args.x, args.y))
-    elif args.cmd == "dance":
-        asyncio.run(dance(args.pattern, args.size, args.beat_ms))
-    elif args.cmd == "mapsnap":
-        asyncio.run(mapsnap())
-    elif args.cmd == "mapwatch":
-        asyncio.run(mapwatch(args.interval_s, args.count))
-    elif args.cmd == "random_command":
-        asyncio.run(random_command())
+    if args.cmd == "dance":
+        dance(args.pattern, args.size, args.beat_ms)
     else:
         parser.print_help()
 
-
-if __name__ == "__main__":  # pragma: no cover - manual invocation
+if __name__ == "__main__":  # pragma: no cover - CLI entry
     main()

@@ -1,51 +1,18 @@
-When I run:
+# Experiments and observations
 
-`uv run vacuum-ballet beep`
+The original implementation polled and reparsed raw V1 map bytes after every
+waypoint. That made dances slow and prone to “could not reach target” timeouts.
+The rewritten version uses the upstream parsed map_content trait and keeps
+waypoint pacing deterministic; the robot still reports the result through its
+normal status channel.
 
-It says: "Hi, I'm over here"
+Useful experiments:
 
-When I run:
+    uv run vacuum-ballet --json status
+    uv run vacuum-ballet --json where
+    uv run vacuum-ballet map --save logs/maps/garage.png
+    uv run vacuum-ballet dance circle 200 800 --confirm
 
-`uv run vacuum-ballet dance circle`
-
-It says "Going to the target". But it just goes somewhere random, or that I don't understand. And it never actually ends up doing the dance. It says "Could not reach the target".
-
-Or when I run:
-
-`uv run vacuum-ballet dance spin_crazy` 
-
-It says "Going to the target". And it wastes time and says "Could not reach the target". Lets fix that
-
-## FIXED ✅
-
-**Problem**: The arrival detection was causing timeouts due to map parsing errors.
-
-**Solution**: 
-- Simplified dance to use beat-based timing only
-- Removed complex arrival detection that was failing
-- Reduced default dance radius from 800mm to 400mm for garage safety
-- Robot now dances near its current position (close to dock)
-- Added `uv run vacuum-ballet where` command to debug coordinates
-
-**Usage**:
-```bash
-# Simple dances near current position
-uv run vacuum-ballet dance circle     # 400mm radius, 1s beats
-uv run vacuum-ballet dance spin_crazy # Crazy movements, small radius
-uv run vacuum-ballet dance square 200 # Small 200mm square
-
-# Debug coordinates
-uv run vacuum-ballet where
-```.
-
-Shanes-MacBook-Pro-Personal:vacuum-ballet shane$ uv run vacuum-ballet dance square 100 600
-🕺 Starting square dance (size: 100mm, beat: 600ms)
-   Centering near dock at: (25939, 25613) mm
-   📐 Clamped dance size to: 200mm
-   🎯 Dance will visit 5 waypoints
-   Step 1/5
-   Step 5/5
-   🎉 Dance complete!
-Shanes-MacBook-Pro-Personal:vacuum-ballet shane$ 
-
-After this it spins a bit and says "Could not reach the target". Not obvious why. Need to search online for the issue.
+Record the returned status and map image before changing radius, centre, or
+beat. A map-frame coordinate is not a room-relative coordinate, and its axes
+may not match the orientation a person expects from the garage.

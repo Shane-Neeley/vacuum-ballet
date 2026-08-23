@@ -1,89 +1,62 @@
-# TECH.md — Roborock S4 Max: Sensors & Effectors
+# Technical model
 
-A quick, practical map of **what hardware the S4 Max has** and **how you can drive it** from our Python project. Where useful, this doc also links the parts to SDK commands you can call.
+Roborock does not provide this project with a public motor-control API. The
+upstream python-roborock library reverse-engineers the account/cloud and
+device protocols. Current upstream v7 uses a DeviceManager with optional
+capability sets; standard vacuums expose device.v1_properties.
 
----
+The important flow is:
 
-## Hardware overview (what's on the robot)
+1. RoborockApiClient.pass_login() obtains UserData.
+2. create_device_manager(UserParams(...)) discovers and connects devices.
+3. device.v1_properties.status.refresh() reads status.
+4. device.v1_properties.map_content.refresh() fetches and parses map data.
+5. device.v1_properties.command.send(...) sends an explicit V1 command.
 
-### Sensor suite
+Movement is high-level app_goto_target([x, y]), equivalent to the app's Pin n
+Go feature. The robot's own localization, planning, and obstacle avoidance
+remain in charge. local_connected reports whether the adaptive transport
+currently has a local connection; cloud MQTT remains an available fallback.
 
-| Sensor                                              | What it does                                                                      | Notes you can rely on                                                                                                     |
-| --------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **Laser Distance Sensor (LDS / LiDAR)**             | Spins in the turret to measure ranges for mapping & navigation (SLAM).            | Listed as "Laser distance sensor" in the official manual's labeled diagram.                                               |
-| **Cliff sensors (downward IR)**                     | Detect stairs/ledges to prevent falls.                                            | Manual shows "Cliff sensor"; the S4 Max docs (and mirrored manual pages) specify **four** cliff sensors on the underside. |
-| **Wall sensor (side IR)**                           | Tracks along walls and edges.                                                     | Labeled "Wall sensor" in the manual diagram.                                                                              |
-| **Bumper (front)**                                  | Physical contact switch to detect collisions.                                     | Labeled "Bumper" in the manual diagram.                                                                                   |
-| **Vertical bumper**                                 | Prevents getting trapped under low furniture by sensing contact on the top/front. | Roborock's product page calls out a *vertical bumper* as part of the Sensient™ array.                                     |
-| **Recharge/dock sensor (IR)**                       | Sees the dock's locator beacon to return home.                                    | Manual labels **Recharge sensor** on the robot and **Locator beacon** on the dock.                                        |
-| **Jam/brush sensor**                                | Detects a jammed main brush to protect the motor/gearbox.                         | Mentioned on Roborock's S4 Max page.                                                                                      |
-| **System indicators (Wi-Fi / power LEDs, speaker)** | Status feedback & voice/beeps; useful for "find me" beeps in our dances.          | Wi-Fi indicator states and the Speaker are shown in the manual.                                                           |
+The agent layer rejects ambiguous device selection and requires confirmation
+before writes. It does not expose arbitrary raw commands to the CLI, although
+the Python send() method is available for future, reviewed capabilities.
 
-> The S4 Max is a LiDAR SLAM robot: you **give it coordinates**; it handles localization, obstacle detection, and pathing on-board.
+## Safety and agent boundary
 
-### Effectors (things you can command)
+The code has three distinct paths:
 
-| Effector                      | What it physically is                                | How you'll use it                                                                                                                                 |
-| ----------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Drive motors (L/R wheels)** | Two independent DC gearmotors drive the main wheels. | Send **go-to (x, y)** targets; robot plans motion to reach them. (We avoid raw motor commands.)                                                   |
-| **Vacuum fan**                | High-speed blower for suction.                       | Adjustable by "mode" (Quiet / Balanced / Strong / MAX) and via **custom** power in SDKs. Manual exposes the modes; SDK exposes `set_custom_mode`. |
-| **Main brush motor**          | Spins the center brush to sweep debris.              | Tied to cleaning/spot tasks; indirectly driven when cleaning or moving.                                                                           |
-| **Side brush motor**          | Edge sweeping.                                       | As above; used during cleaning and edge-following.                                                                                                |
-| **Speaker**                   | Beeper/voice prompts.                                | We use **find-me**/test volume for rhythmic "beats."                                                                                              |
+```text
+natural language -> narrow intent parser -> reviewable plan -> optional confirmation -> device trait
+                                           \-> playground (always offline)
+```
 
----
+`src/safety.py` builds the same integer waypoint plan used by previews and
+real execution. Physical dances currently require a radius of 200–1200 mm, a
+beat of at least 250 ms, and no more than 32 waypoints. Invalid requests are
+rejected rather than silently clamped. The robot still owns navigation and
+obstacle avoidance, so a human should preview the map position and clear the
+garage before confirming a dance.
 
-## App/firmware behaviors you can lean on
+`src/playground.py` is the home for theatrical behavior: failure, confusion,
+victory, and “too fast.” These routines return deterministic event records and
+explicitly report `executed_on_robot: false`. This keeps a child’s joke from
+turning into unsafe speed or raw motor control.
 
-* **Pin n Go / go-to-point:** The official app has "Pin n Go" (tap a map location and it drives there). That's exactly the capability we script via `app_goto_target`.
-* **Cleaning modes & Carpet Boost:** The app exposes **Quiet / Balanced / Strong / MAX**, and "Carpet Boost" automatically increases suction on carpeted areas.
+## Rooms and current upstream examples
 
----
+The `rooms` command refreshes `device.v1_properties.rooms`, exposing the
+upstream `segment_id`, `iot_id`, and optional room name. `clean-rooms` sends
+the reviewed V1 `app_segment_clean` payload with a bounded segment count and
+repeat count. Segment IDs are discovered from the robot; the agent does not
+infer them from words such as “kitchen.”
 
-## Programming hooks (SDK commands that map to the hardware)
+The implementation follows the current upstream library shape and examples:
 
-These are the core calls you'll reach for from Python (via `python-roborock`) and what they touch on the robot:
-
-* **Go to coordinate (drive motors):** `app_goto_target [x_mm, y_mm]` — this is our dance workhorse.
-* **Return to dock (drive + dock sensor):** `app_charge` — heads back and lines up with the dock beacon.
-* **Remote control (short velocity bursts):** `app_rc_start/move/stop/end` — optional, firmware-dependent; nice for tiny spins between waypoints.
-* **Beep/locate (speaker):** `find_me` or `test_sound_volume` — useful for downbeat cues.
-* **Fan power (vacuum blower):** `set_custom_mode` — set a percentage/level beyond the four preset modes (exact maps vary by model).
-
-> Networking tip for local control (HA/integrations): make sure your controller can reach the vacuum on **TCP 58867** on your LAN.
-
----
-
-## Practical notes you'll feel when dancing
-
-* **Coordinates are in millimeters, in the robot's map frame.** If directions feel "rotated" vs. your room, use our CLI's `--rotate-deg` / `--flipx` / `--flipy` to align.
-* **Latency & pacing:** The robot's planner queues work; send waypoints at a rhythm it can satisfy. Our default approach is beat-paced (BPM), and you can upgrade to **near-arrival gating** for smoother motion.
-* **Use effects tastefully:** Beeps (speaker) on downbeats and small fan ramps (blower) make routines feel alive without disrupting motion.
-
----
-
-## Clean, safe API surface (tying it back to our repo)
-
-* `rd goto X Y` → **drive** to a point (uses `app_goto_target`).
-* `rd dance` → streams a **series of waypoints** (circle/figure-eight/Lissajous), with optional rotate/flip transforms so frames match reality.
-* `rd beep` → **find-me** beep (speaker).
-* `rd rc-spin` → tiny flourish via **remote control** (if your firmware exposes `app_rc_*`).
-* Fan power tracks (optional): wire `set_custom_mode` for crescendos; presets remain available in the app (Quiet/Balanced/Strong/MAX).
-
----
-
-## Source references
-
-* **Official S4 Max user manual** (labelled diagram shows sensors; app features list includes Pin n Go, modes, Carpet Boost, dock beacon).
-* **Python-Roborock docs** (command list: `app_goto_target`, `app_charge`, `app_rc_*`, `find_me`, `set_custom_mode`).
-* **Roborock S4 Max page** (Sensient™ array: cliff sensors, vertical bumper, jam sensor).
-* **Home Assistant Roborock integration** (local API port 58867).
-
----
-
-### TL;DR
-
-* **Sensors**: LiDAR + cliff + wall + bumper + dock IR (+ jam detect).
-* **Effectors**: drive motors, vacuum fan, main/side brushes, speaker.
-* **You control**: go-to waypoints, dock, optional RC bursts, beeps, and fan levels.
-  That's everything you need to reason about the robot like a mobile base—and choreograph it with confidence.
+- [python-roborock README](https://github.com/Python-roborock/python-roborock)
+  documents `RoborockApiClient`, `UserParams`, `create_device_manager`, and
+  V1 traits.
+- [upstream Python example](https://github.com/Python-roborock/python-roborock/blob/main/examples/example.py)
+  demonstrates discovery, status refresh, and command sending.
+- [upstream V1 command reference](https://github.com/Python-roborock/python-roborock/blob/main/docs/V1_API_COMMANDS.md)
+  records the segment-clean payload and other app commands.

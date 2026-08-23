@@ -1,14 +1,18 @@
 [project]
 name = "vacuum-ballet"
 version = "0.1.0"
-description = "Choreograph a Roborock S4 Max from Python: goto + paths + beats"
+description = "A safe, agent-friendly control layer for Roborock vacuums"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "python-roborock",
-    "python-dotenv",
-    "pytest",
-    "matplotlib",
+    "python-roborock>=7.1.1,<8",
+    "python-dotenv>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1.1",
 ]
 
 [project.scripts]

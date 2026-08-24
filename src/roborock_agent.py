@@ -12,11 +12,14 @@ import asyncio
 import json
 import logging
 import os
+import pickle
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from roborock import RoborockCommand
+from roborock.devices.cache import CacheData
 from roborock.devices.device import RoborockDevice
 from roborock.devices.device_manager import DeviceManager, UserParams, create_device_manager
 from roborock.devices.file_cache import FileCache, load_value, store_value
@@ -24,6 +27,7 @@ from roborock.exceptions import RoborockException
 from roborock.web_api import RoborockApiClient
 
 from patterns import Point
+from remote import remote_dance_plan
 from safety import SafetyPolicy, dance_plan
 
 LOGGER = logging.getLogger("vacuum_ballet")
@@ -31,6 +35,55 @@ LOGGER = logging.getLogger("vacuum_ballet")
 
 class AgentError(RuntimeError):
     """Expected configuration, selection, or safety error."""
+
+
+class SafeFileCache(FileCache):
+    """Persist only serializable Roborock cache data.
+
+    Recent ``python-roborock`` versions can place live RPC callbacks inside
+    the cache object. The upstream ``FileCache`` opens the destination before
+    serializing, so a failed pickle can both abort an otherwise successful
+    command and leave a zero-byte cache behind. The device cache is optional:
+    fall back to an empty cache and keep the command result intact.
+    """
+
+    async def get(self) -> CacheData:
+        try:
+            return await super().get()
+        except (EOFError, pickle.UnpicklingError, AttributeError, ImportError, TypeError, ValueError) as exc:
+            LOGGER.warning("Ignoring invalid Roborock device cache %s: %s", self._file_path, exc)
+            self._cache_data = CacheData()
+            return self._cache_data
+
+    async def flush(self) -> None:
+        if self._cache_data is None:
+            return
+
+        try:
+            data = await asyncio.to_thread(self._serialize_fn, self._cache_data)
+        except (pickle.PicklingError, AttributeError, TypeError) as exc:
+            LOGGER.warning("Roborock device cache contains live runtime state; skipping it: %s", exc)
+            data = await asyncio.to_thread(self._serialize_fn, CacheData())
+            self._cache_data = CacheData()
+
+        await asyncio.to_thread(self._atomic_write, data)
+
+    def _atomic_write(self, data: bytes) -> None:
+        self._file_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{self._file_path.name}.",
+            dir=self._file_path.parent,
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with open(fd, "wb", closefd=True) as handle:
+                handle.write(data)
+            temporary_path.replace(self._file_path)
+        finally:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -199,7 +252,7 @@ class RoborockAgent:
         """Connect through the current upstream DeviceManager API."""
         params = await _load_or_login(config, fresh=fresh_login)
         config.cache_dir.mkdir(parents=True, exist_ok=True)
-        cache = FileCache(config.device_cache_path)
+        cache = SafeFileCache(config.device_cache_path)
         try:
             manager = await create_device_manager(params, cache=cache, prefer_cache=not fresh_login)
         except Exception as exc:
@@ -277,8 +330,13 @@ class RoborockAgent:
         device = self.require_device()
         props = device.v1_properties
         assert props is not None
-        await props.status.refresh()
-        await props.map_content.refresh()
+        try:
+            await props.status.refresh()
+            await props.map_content.refresh()
+        except RoborockException as exc:
+            # Parsing failures can include the raw map payload in ``str(exc)``.
+            # Keep that binary response out of CLI errors and logs.
+            raise AgentError(f"Could not refresh the Roborock map ({type(exc).__name__})") from exc
         map_data = props.map_content.map_data
         image_path: str | None = None
         if save_to is not None:
@@ -353,6 +411,63 @@ class RoborockAgent:
         """Send a map-frame Pin n Go target in millimetres."""
         return await self.send(RoborockCommand.APP_GOTO_TARGET, [int(point[0]), int(point[1])])
 
+    async def _wait_for_navigation_settle(self, timeout_s: float = 30.0) -> str:
+        """Wait for a Pin n Go target to start and then leave the moving state."""
+        device = self.require_device()
+        props = device.v1_properties
+        assert props is not None
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        startup_deadline = min(deadline, asyncio.get_running_loop().time() + 2.0)
+        saw_motion = False
+        while True:
+            try:
+                await props.status.refresh()
+            except RoborockException as exc:
+                raise AgentError("Could not verify the vacuum's navigation state") from exc
+            state_name = props.status.state_name
+            if state_name == "going_to_target":
+                saw_motion = True
+            elif saw_motion or asyncio.get_running_loop().time() >= startup_deadline:
+                return state_name
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AgentError("Timed out waiting for the dance target; the vacuum may still be moving")
+            await asyncio.sleep(0.5)
+
+    async def _remote_command(self, command: RoborockCommand, params: Any = None) -> Any:
+        """Send remote-control commands through the MQTT-only V1 channel.
+
+        The upstream adaptive channel prefers local RPC. The S4 Max accepts the
+        remote-control acknowledgment locally, but its drive pulses are reliably
+        delivered through the MQTT command channel.
+        """
+        device = self.require_device()
+        props = device.v1_properties
+        assert props is not None
+        channel = getattr(props, "_mqtt_rpc_channel", None)
+        if channel is None:
+            return await self.send(command, params)
+        return await channel.send_command(command, params=params)
+
+    async def _wait_for_remote_ready(self, timeout_s: float = 8.0) -> str:
+        """Wait until the vacuum has entered its manual-control state."""
+        device = self.require_device()
+        props = device.v1_properties
+        assert props is not None
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while True:
+            try:
+                await props.status.refresh()
+            except RoborockException as exc:
+                raise AgentError("Could not verify remote-control readiness") from exc
+            state_name = props.status.state_name
+            if state_name == "manual_mode":
+                return state_name
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AgentError(
+                    f"Remote control did not become ready (last state: {state_name}); the vacuum was stopped"
+                )
+            await asyncio.sleep(0.5)
+
     async def dance(self, pattern: str, size_mm: int, beat_ms: int, center: Point | None = None) -> dict[str, Any]:
         """Send a previewable sequence of map-frame targets."""
         device = self.require_device()
@@ -375,14 +490,48 @@ class RoborockAgent:
             )
         except (TypeError, ValueError) as exc:
             raise AgentError(str(exc)) from exc
+        settled_state = "idle"
         for index, point in enumerate(plan["waypoints"]):
             target = (point["x"], point["y"])
             await self.goto(target)
+            settled_state = await self._wait_for_navigation_settle()
             if index < len(plan["waypoints"]) - 1 and plan["beat_ms"] > 0:
                 await asyncio.sleep(plan["beat_ms"] / 1000)
         plan.pop("waypoints", None)
         plan["device"] = _device_summary(device)
+        plan["settled_state"] = settled_state
         plan["waypoints"] = plan.pop("waypoint_count")
+        return plan
+
+    async def remote_dance(self, style: str) -> dict[str, Any]:
+        """Run a bounded joystick-style dance with guaranteed cleanup."""
+        device = self.require_device()
+        try:
+            plan = remote_dance_plan(style)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
+
+        started = False
+        ready_state = None
+        try:
+            await self._remote_command(RoborockCommand.APP_RC_START)
+            started = True
+            ready_state = await self._wait_for_remote_ready()
+            for index, move in enumerate(plan["moves"]):
+                await self._remote_command(RoborockCommand.APP_RC_MOVE, [move])
+                await asyncio.sleep(move["duration"] / 1000)
+                if index < len(plan["moves"]) - 1:
+                    await asyncio.sleep(plan["inter_pulse_pause_ms"] / 1000)
+        finally:
+            if started:
+                try:
+                    await self._remote_command(RoborockCommand.APP_RC_STOP)
+                finally:
+                    await self._remote_command(RoborockCommand.APP_RC_END)
+
+        plan["mode"] = "remote_control"
+        plan["device"] = _device_summary(device)
+        plan["ready_state"] = ready_state
         return plan
 
 

@@ -25,6 +25,10 @@ def test_cli_exposes_offline_playground_and_preview() -> None:
     assert parser.parse_args(["play", "failure"]).scenario == "failure"
     preview = parser.parse_args(["preview", "circle", "300", "500"])
     assert preview.cmd == "preview"
+    remote_preview = parser.parse_args(["remote-preview", "crazy"])
+    assert remote_preview.cmd == "remote-preview"
+    assert parser.parse_args(["remote-preview", "drift"]).style == "drift"
+    assert parser.parse_args(["remote-preview", "sprint"]).style == "sprint"
 
 
 @pytest.mark.asyncio

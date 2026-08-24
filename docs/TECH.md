@@ -36,7 +36,10 @@ real execution. Physical dances currently require a radius of 200–1200 mm, a
 beat of at least 250 ms, and no more than 32 waypoints. Invalid requests are
 rejected rather than silently clamped. The robot still owns navigation and
 obstacle avoidance, so a human should preview the map position and clear the
-garage before confirming a dance.
+garage before confirming a dance. After each Pin n Go target, the agent polls
+until the vacuum leaves `going_to_target` and applies the beat as a minimum
+pause. It reports `settled_state`, so callers do not stack waypoints onto
+unfinished motion.
 
 `src/playground.py` is the home for theatrical behavior: failure, confusion,
 victory, and “too fast.” These routines return deterministic event records and

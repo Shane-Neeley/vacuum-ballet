@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "python-roborock>=7.1.1,<8",
+    "vacuum-map-parser-roborock>=0.1.5,<0.2",
     "python-dotenv>=1.0,<2",
 ]
 

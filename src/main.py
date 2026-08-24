@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from intents import intent_plan, parse_kid_request
 from patterns import Point
 from playground import SCENARIOS, run_playground
+from remote import remote_dance_plan
 from roborock_agent import AgentConfig, AgentError, RoborockAgent, _load_or_login
 from safety import SafetyPolicy, dance_plan
 
@@ -67,6 +68,11 @@ async def _run(args: argparse.Namespace) -> Any:
             return dance_plan(args.pattern, (args.center_x, args.center_y), args.size, args.beat_ms)
         except (TypeError, ValueError) as exc:
             raise AgentError(str(exc)) from exc
+    if args.cmd == "remote-preview":
+        try:
+            return remote_dance_plan(args.style)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
     if args.cmd == "ask":
         try:
             parsed = parse_kid_request(" ".join(args.text))
@@ -103,7 +109,8 @@ async def _run(args: argparse.Namespace) -> Any:
         action = payload.get("action")
         known_actions = {
             "devices", "status", "where", "map", "rooms", "beep", "clean", "clean_rooms",
-            "dock", "pause", "stop", "goto", "dance", "preview", "play",
+            "dock", "pause", "stop", "goto", "dance", "preview", "remote_preview",
+            "remote_dance", "play",
         }
         if action not in known_actions:
             raise AgentError(f"Unknown intent action: {action!r}")
@@ -125,7 +132,14 @@ async def _run(args: argparse.Namespace) -> Any:
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise AgentError(str(exc)) from exc
-        writes = {"clean", "clean_rooms", "dock", "pause", "stop", "beep", "goto", "dance"}
+        if action == "remote_preview":
+            try:
+                return remote_dance_plan(str(payload.get("style", "crazy")))
+            except ValueError as exc:
+                raise AgentError(str(exc)) from exc
+        writes = {
+            "clean", "clean_rooms", "dock", "pause", "stop", "beep", "goto", "dance", "remote_dance",
+        }
         if action in writes and not payload.get("confirm", False):
             raise AgentError(f"intent {action!r} requires JSON field confirm=true")
         args.cmd = action
@@ -144,10 +158,15 @@ async def _run(args: argparse.Namespace) -> Any:
             except (KeyError, TypeError, ValueError) as exc:
                 raise AgentError("clean_rooms intent requires an integer segments array") from exc
             args.repeat = int(payload.get("repeat", 1))
+        if action == "remote_dance":
+            args.cmd = "remote-dance"
+            args.style = str(payload.get("style", "crazy"))
         args.confirm = bool(payload.get("confirm", False))
         args.as_json = True
 
-    writes = {"clean", "clean_rooms", "dock", "pause", "stop", "beep", "goto", "dance"}
+    writes = {
+        "clean", "clean_rooms", "dock", "pause", "stop", "beep", "goto", "dance", "remote-dance",
+    }
     if args.cmd in writes:
         _confirm(args, args.cmd)
     if args.cmd == "dance":
@@ -215,6 +234,8 @@ async def _run(args: argparse.Namespace) -> Any:
             if getattr(args, "center_x", None) is not None and getattr(args, "center_y", None) is not None:
                 center = (args.center_x, args.center_y)
             return await agent.dance(args.pattern, args.size, args.beat_ms, center)
+        if args.cmd == "remote-dance":
+            return await agent.remote_dance(args.style)
         raise AgentError(f"Unknown command: {args.cmd}")
 
 
@@ -262,6 +283,13 @@ def _parser() -> argparse.ArgumentParser:
     p_preview.add_argument("beat_ms", type=int, nargs="?", default=int(os.getenv("DEFAULT_BEAT_MS", "500")))
     p_preview.add_argument("--center-x", type=int, default=0)
     p_preview.add_argument("--center-y", type=int, default=0)
+
+    p_remote_preview = sub.add_parser("remote-preview", help="Preview a bounded joystick-style dance")
+    p_remote_preview.add_argument("style", choices=["wiggle", "spin", "crazy", "drift", "sprint"])
+
+    p_remote = sub.add_parser("remote-dance", help="Run a bounded joystick-style dance")
+    p_remote.add_argument("style", choices=["wiggle", "spin", "crazy", "drift", "sprint"])
+    p_remote.add_argument("--confirm", action="store_true", default=argparse.SUPPRESS)
 
     p_play = sub.add_parser("play", help="Run a simulator-only kid comedy routine")
     p_play.add_argument("scenario", choices=list(SCENARIOS))

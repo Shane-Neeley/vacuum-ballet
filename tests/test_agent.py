@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from roborock import RoborockCommand
+from roborock.devices.cache import CacheData
 
-from roborock_agent import AgentConfig, AgentError, RoborockAgent, _code_login, _select_device
+from roborock_agent import AgentConfig, AgentError, RoborockAgent, SafeFileCache, _code_login, _select_device
 
 
 def fake_device(name: str = "Garage Roborock", duid: str = "duid-1") -> SimpleNamespace:
@@ -106,6 +107,50 @@ async def test_dance_safety_rejects_zero_delay_before_any_command() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dance_waits_for_final_target_to_settle() -> None:
+    device = fake_device()
+    device.v1_properties.status.state_name = "going_to_target"
+    refresh_count = 0
+
+    async def refresh() -> None:
+        nonlocal refresh_count
+        refresh_count += 1
+        if refresh_count % 2 == 0:
+            device.v1_properties.status.state_name = "idle"
+        else:
+            device.v1_properties.status.state_name = "going_to_target"
+
+    device.v1_properties.status.refresh = AsyncMock(side_effect=refresh)
+    agent = RoborockAgent(SimpleNamespace(), SimpleNamespace(), device)
+
+    with patch("roborock_agent.asyncio.sleep", new=AsyncMock()):
+        result = await agent.dance("square", 200, 250, center=(1000, 2000))
+
+    assert result["settled_state"] == "idle"
+    assert refresh_count == 10
+    assert device.v1_properties.command.send.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_remote_dance_stops_and_ends_manual_control() -> None:
+    device = fake_device()
+    device.v1_properties.status.state_name = "manual_mode"
+    agent = RoborockAgent(SimpleNamespace(), SimpleNamespace(), device)
+
+    with patch("roborock_agent.asyncio.sleep", new=AsyncMock()):
+        result = await agent.remote_dance("crazy")
+
+    send = device.v1_properties.command.send
+    assert result["mode"] == "remote_control"
+    assert result["pulse_count"] == 8
+    assert send.await_args_list[0].args == (RoborockCommand.APP_RC_START, None)
+    assert send.await_args_list[1].args[0] == RoborockCommand.APP_RC_MOVE
+    assert send.await_args_list[1].args[1][0]["seqnum"] == 1
+    assert send.await_args_list[-2].args == (RoborockCommand.APP_RC_STOP, None)
+    assert send.await_args_list[-1].args == (RoborockCommand.APP_RC_END, None)
+
+
+@pytest.mark.asyncio
 async def test_missing_credentials_fail_before_network(tmp_path) -> None:
     with pytest.raises(AgentError, match="ROBO_EMAIL"):
         await RoborockAgent.connect(AgentConfig(cache_dir=tmp_path))
@@ -136,3 +181,16 @@ async def test_configured_code_does_not_request_a_replacement() -> None:
     assert result == "user-data"
     api.request_code_v4.assert_not_awaited()
     api.code_login_v4.assert_awaited_once_with("654321")
+
+
+@pytest.mark.asyncio
+async def test_device_cache_survives_unserializable_runtime_state(tmp_path) -> None:
+    cache_path = tmp_path / "device-cache.pkl"
+    cache = SafeFileCache(cache_path)
+    cache_data = CacheData(trait_data={"runtime_callback": lambda: None})
+    await cache.set(cache_data)
+
+    await cache.flush()
+
+    recovered = SafeFileCache(cache_path)
+    assert isinstance(await recovered.get(), CacheData)
